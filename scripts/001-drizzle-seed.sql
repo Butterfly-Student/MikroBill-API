@@ -1,0 +1,94 @@
+-- -- Insert default roles
+-- INSERT INTO roles (name, description) VALUES
+--   ('admin', 'Full system access with all permissions'),
+--   ('manager', 'Management access with limited administrative permissions'),
+--   ('user', 'Standard user access with basic permissions'),
+--   ('viewer', 'Read-only access to most resources')
+-- ON CONFLICT (name) DO NOTHING;
+
+-- -- Insert permissions
+-- INSERT INTO permissions (name, description, resource, action) VALUES
+--   ('users.read', 'View users', 'users', 'read'),
+--   ('users.write', 'Create and edit users', 'users', 'write'),
+--   ('users.delete', 'Delete users', 'users', 'delete'),
+--   ('roles.read', 'View roles', 'roles', 'read'),
+--   ('roles.write', 'Create and edit roles', 'roles', 'write'),
+--   ('roles.delete', 'Delete roles', 'roles', 'delete'),
+--   ('permissions.read', 'View permissions', 'permissions', 'read'),
+--   ('permissions.write', 'Create and edit permissions', 'permissions', 'write'),
+--   ('permissions.delete', 'Delete permissions', 'permissions', 'delete'),
+--   ('projects.read', 'View projects', 'projects', 'read'),
+--   ('projects.write', 'Create and edit projects', 'projects', 'write'),
+--   ('projects.delete', 'Delete projects', 'projects', 'delete'),
+--   ('dashboard.read', 'View dashboard', 'dashboard', 'read'),
+--   ('settings.read', 'View settings', 'settings', 'read'),
+--   ('settings.write', 'Modify settings', 'settings', 'write'),
+--   ('analytics.read', 'View analytics', 'analytics', 'read')
+-- ON CONFLICT (name) DO NOTHING;
+
+-- -- Assign permissions to roles
+-- -- Admin gets all permissions
+-- INSERT INTO role_permissions (role_id, permission_id)
+-- SELECT r.id, p.id
+-- FROM roles r, permissions p
+-- WHERE r.name = 'admin'
+-- ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+-- -- Manager gets most permissions except user/role/permission deletion
+-- INSERT INTO role_permissions (role_id, permission_id)
+-- SELECT r.id, p.id
+-- FROM roles r, permissions p
+-- WHERE r.name = 'manager' 
+--   AND p.name IN (
+--     'users.read', 'users.write',
+--     'roles.read', 'permissions.read',
+--     'projects.read', 'projects.write', 'projects.delete',
+--     'dashboard.read', 'settings.read', 'settings.write',
+--     'analytics.read'
+--   )
+-- ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+-- -- User gets basic permissions
+-- INSERT INTO role_permissions (role_id, permission_id)
+-- SELECT r.id, p.id
+-- FROM roles r, permissions p
+-- WHERE r.name = 'user' 
+--   AND p.name IN (
+--     'projects.read', 'projects.write',
+--     'dashboard.read', 'settings.read'
+--   )
+-- ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+-- -- Viewer gets read-only permissions
+-- INSERT INTO role_permissions (role_id, permission_id)
+-- SELECT r.id, p.id
+-- FROM roles r, permissions p
+-- WHERE r.name = 'viewer' 
+--   AND p.name IN (
+--     'projects.read', 'dashboard.read'
+--   )
+-- ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+-- -- Create default admin user (password: admin123)
+-- INSERT INTO users (email, username, password, name) VALUES
+--   ('admin@example.com', 'admin', '$2b$10$rOzJqQqQqQqQqQqQqQqQqOzJqQqQqQqQqQqQqQqQqOzJqQqQqQqQqu', 'Administrator')
+-- ON CONFLICT (email) DO NOTHING;
+
+-- -- Create default user (password: user123)
+-- INSERT INTO users (email, username, password, name) VALUES
+--   ('user@example.com', 'user', '$2b$10$rOzJqQqQqQqQqQqQqQqQqOzJqQqQqQqQqQqQqQqQqOzJqQqQqQqQqu', 'Regular User')
+-- ON CONFLICT (email) DO NOTHING;
+
+-- -- Assign admin role to admin user
+-- INSERT INTO user_roles (user_id, role_id)
+-- SELECT u.id, r.id
+-- FROM users u, roles r
+-- WHERE u.username = 'admin' AND r.name = 'admin'
+-- ON CONFLICT (user_id, role_id) DO NOTHING;
+
+-- -- Assign user role to regular user
+-- INSERT INTO user_roles (user_id, role_id)
+-- SELECT u.id, r.id
+-- FROM users u, roles r
+-- WHERE u.username = 'user' AND r.name = 'user'
+-- ON CONFLICT (user_id, role_id) DO NOTHING;

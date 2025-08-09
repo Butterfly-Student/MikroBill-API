@@ -1,0 +1,22 @@
+# Dependency directory
+node_modules
+
+# Editors
+.idea
+*.iml
+.vscode
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Temp files
+temp
+
+# Libs doesn't need this
+package-lock.json
+
+# Make the package smaller - the source is on the github link
+src
+test
+.env*
