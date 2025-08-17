@@ -1,8 +1,13 @@
 import { Elysia, t } from "elysia";
 import * as customerHandler from "@/handlers/customers.handlers";
 
-export const customerRoutes = new Elysia({ prefix: "/customers" })
+export const customerRoutes = new Elysia({
+	prefix: "/routers/:router_id/customers",
+})
 	.get("/", customerHandler.getCustomers, {
+		params: t.Object({
+			router_id: t.String({ pattern: "^[0-9]+$" }),
+		}),
 		query: t.Object({
 			page: t.Optional(t.Number({ minimum: 1 })),
 			limit: t.Optional(t.Number({ minimum: 1, maximum: 100 })),
@@ -14,16 +19,19 @@ export const customerRoutes = new Elysia({ prefix: "/customers" })
 					t.Literal("suspended"),
 				])
 			),
-			router_id: t.Optional(t.Number({ minimum: 1 })),
 		}),
 		detail: {
-			summary: "Get all customers",
-			description: "Retrieve customers with optional filtering and pagination",
-			tags: ["Customers"],
+			summary: "Get all customers for a router",
+			description:
+				"Retrieve customers for a specific router with optional filtering and pagination",
+			tags: ["Routers", "Customers"],
 		},
 	})
 
 	.post("/", customerHandler.createCustomer, {
+		params: t.Object({
+			router_id: t.String({ pattern: "^[0-9]+$" }),
+		}),
 		body: t.Object({
 			username: t.String({
 				minLength: 3,
@@ -37,30 +45,31 @@ export const customerRoutes = new Elysia({ prefix: "/customers" })
 			phone: t.Optional(t.String({ maxLength: 20 })),
 			address: t.Optional(t.String({ maxLength: 500 })),
 			service_plan_id: t.Optional(t.Number({ minimum: 1 })),
-			router_id: t.Optional(t.Number({ minimum: 1 })),
 			notes: t.Optional(t.String({ maxLength: 1000 })),
 		}),
 		detail: {
 			summary: "Create new customer",
-			description: "Create a new customer account",
-			tags: ["Customers"],
+			description: "Create a new customer account for a specific router",
+			tags: ["Routers", "Customers"],
 		},
 	})
 
 	.get("/:id", customerHandler.getCustomerById, {
 		params: t.Object({
-			id: t.String({ pattern: "^[0-9]+$" }),
+			router_id: t.String({ pattern: "^[0-9]+$" }),
+			customer_id: t.String({ pattern: "^[0-9]+$" }),
 		}),
 		detail: {
 			summary: "Get customer by ID",
 			description: "Retrieve a specific customer with related data",
-			tags: ["Customers"],
+			tags: ["Routers", "Customers"],
 		},
 	})
 
 	.put("/:id", customerHandler.updateCustomer, {
 		params: t.Object({
-			id: t.String({ pattern: "^[0-9]+$" }),
+			router_id: t.String({ pattern: "^[0-9]+$" }),
+			customer_id: t.String({ pattern: "^[0-9]+$" }),
 		}),
 		body: t.Object({
 			username: t.Optional(
@@ -77,7 +86,6 @@ export const customerRoutes = new Elysia({ prefix: "/customers" })
 			phone: t.Optional(t.String({ maxLength: 20 })),
 			address: t.Optional(t.String({ maxLength: 500 })),
 			service_plan_id: t.Optional(t.Number({ minimum: 1 })),
-			router_id: t.Optional(t.Number({ minimum: 1 })),
 			notes: t.Optional(t.String({ maxLength: 1000 })),
 			status: t.Optional(
 				t.Union([
@@ -91,39 +99,42 @@ export const customerRoutes = new Elysia({ prefix: "/customers" })
 		detail: {
 			summary: "Update customer",
 			description: "Update customer information",
-			tags: ["Customers"],
+			tags: ["Routers", "Customers"],
 		},
 	})
 
 	.delete("/:id", customerHandler.deleteCustomer, {
 		params: t.Object({
-			id: t.String({ pattern: "^[0-9]+$" }),
+			router_id: t.String({ pattern: "^[0-9]+$" }),
+			customer_id: t.String({ pattern: "^[0-9]+$" }),
 		}),
 		detail: {
 			summary: "Delete customer",
 			description: "Delete a customer account (only if no active sessions)",
-			tags: ["Customers"],
+			tags: ["Routers", "Customers"],
 		},
 	})
 
 	.get("/:id/sessions", customerHandler.getCustomerSessions, {
 		params: t.Object({
-			id: t.String({ pattern: "^[0-9]+$" }),
+			router_id: t.String({ pattern: "^[0-9]+$" }),
+			customer_id: t.String({ pattern: "^[0-9]+$" }),
 		}),
 		detail: {
 			summary: "Get customer sessions",
 			description: "Retrieve all sessions for a specific customer",
-			tags: ["Customers"],
+			tags: ["Routers", "Customers"],
 		},
 	})
 
 	.get("/:id/statistics", customerHandler.getCustomerStatistics, {
 		params: t.Object({
-			id: t.String({ pattern: "^[0-9]+$" }),
+			router_id: t.String({ pattern: "^[0-9]+$" }),
+			customer_id: t.String({ pattern: "^[0-9]+$" }),
 		}),
 		detail: {
 			summary: "Get customer statistics",
 			description: "Retrieve statistics and summary for a specific customer",
-			tags: ["Customers"],
+			tags: ["Routers", "Customers"],
 		},
 	});

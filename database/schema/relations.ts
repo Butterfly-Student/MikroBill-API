@@ -5,85 +5,86 @@ import { activityLogs, adminNotes, customers, notesNotifications, reminderTempla
 
 // import { billItems, chartOfAccounts, customerBills, financialTransactions, payments, transactionDetails, transactions } from "./billing";
 import { roles, userRoles, users } from "./users";
+import { chartOfAccounts, customerBills, financialTransactions, payments, transactionDetails } from "./billing";
 
 
-// export const customerBillsRelations = relations(
-// 	customerBills,
-// 	({ one, many }) => ({
-// 		customer: one(customers, {
-// 			fields: [customerBills.customer_id],
-// 			references: [customers.id],
-// 		}),
-// 		creator: one(users, {
-// 			fields: [customerBills.created_by],
-// 			references: [users.id],
-// 		}),
-// 		items: many(billItems),
-// 		payments: many(payments),
-// 	})
-// );
+export const customerBillsRelations = relations(
+	customerBills,
+	({ one, many }) => ({
+		customer: one(customers, {
+			fields: [customerBills.customer_id],
+			references: [customers.id],
+		}),
+		creator: one(users, {
+			fields: [customerBills.created_by],
+			references: [users.id],
+		}),
+		items: many(billItems),
+		payments: many(payments),
+	})
+);
 
-// export const billItemsRelations = relations(billItems, ({ one }) => ({
-// 	bill: one(customerBills, {
-// 		fields: [billItems.bill_id],
-// 		references: [customerBills.id],
-// 	}),
-// }));
+export const billItemsRelations = relations(billItems, ({ one }) => ({
+	bill: one(customerBills, {
+		fields: [billItems.bill_id],
+		references: [customerBills.id],
+	}),
+}));
 
-// export const paymentsRelations = relations(payments, ({ one }) => ({
-// 	bill: one(customerBills, {
-// 		fields: [payments.bill_id],
-// 		references: [customerBills.id],
-// 	}),
-// 	creator: one(users, {
-// 		fields: [payments.created_by],
-// 		references: [users.id],
-// 	}),
-// }));
+export const paymentsRelations = relations(payments, ({ one }) => ({
+	bill: one(customerBills, {
+		fields: [payments.bill_id],
+		references: [customerBills.id],
+	}),
+	creator: one(users, {
+		fields: [payments.created_by],
+		references: [users.id],
+	}),
+}));
 
-// export const chartOfAccountsRelations = relations(
-// 	chartOfAccounts,
-// 	({ one, many }) => ({
-// 		parent: one(chartOfAccounts, {
-// 			fields: [chartOfAccounts.parent_id],
-// 			references: [chartOfAccounts.id],
-// 		}),
-// 		children: many(chartOfAccounts),
-// 		transactionDetails: many(transactionDetails),
-// 	})
-// );
+export const chartOfAccountsRelations = relations(
+	chartOfAccounts,
+	({ one, many }) => ({
+		parent: one(chartOfAccounts, {
+			fields: [chartOfAccounts.parent_id],
+			references: [chartOfAccounts.id],
+		}),
+		children: many(chartOfAccounts),
+		transactionDetails: many(transactionDetails),
+	})
+);
 
-// export const financialTransactionsRelations = relations(
-// 	financialTransactions,
-// 	({ one, many }) => ({
-// 		creator: one(users, {
-// 			fields: [financialTransactions.created_by],
-// 			references: [users.id],
-// 		}),
-// 		details: many(transactionDetails),
-// 	})
-// );
+export const financialTransactionsRelations = relations(
+	financialTransactions,
+	({ one, many }) => ({
+		creator: one(users, {
+			fields: [financialTransactions.created_by],
+			references: [users.id],
+		}),
+		details: many(transactionDetails),
+	})
+);
 
-// export const transactionDetailsRelations = relations(
-// 	transactionDetails,
-// 	({ one }) => ({
-// 		transaction: one(financialTransactions, {
-// 			fields: [transactionDetails.transaction_id],
-// 			references: [financialTransactions.id],
-// 		}),
-// 		account: one(chartOfAccounts, {
-// 			fields: [transactionDetails.account_id],
-// 			references: [chartOfAccounts.id],
-// 		}),
-// 	})
-// );
+export const transactionDetailsRelations = relations(
+	transactionDetails,
+	({ one }) => ({
+		transaction: one(financialTransactions, {
+			fields: [transactionDetails.transaction_id],
+			references: [financialTransactions.id],
+		}),
+		account: one(chartOfAccounts, {
+			fields: [transactionDetails.account_id],
+			references: [chartOfAccounts.id],
+		}),
+	})
+);
 
-// export const transactionsRelations = relations(transactions, ({ one }) => ({
-// 	user: one(customers, {
-// 		fields: [transactions.user_id],
-// 		references: [customers.id],
-// 	}),
-// }));
+export const transactionsRelations = relations(transactions, ({ one }) => ({
+	user: one(customers, {
+		fields: [transactions.user_id],
+		references: [customers.id],
+	}),
+}));
 
 export const scheduledTasksRelations = relations(scheduledTasks, ({ one }) => ({
 	template: one(reminderTemplates, {

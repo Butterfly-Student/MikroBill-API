@@ -2,7 +2,7 @@ import { Elysia, t } from "elysia";
 import * as routerHandler from "@/handlers/router.handler";
 
 export const routerRoutes = new Elysia({ prefix: "/routers" })
-	.get("/", routerHandler.getRouters, {
+	.get("/all", routerHandler.getRouters, {
 		query: t.Object({
 			page: t.Optional(t.Number({ minimum: 1 })),
 			limit: t.Optional(t.Number({ minimum: 1, maximum: 100 })),
@@ -17,7 +17,7 @@ export const routerRoutes = new Elysia({ prefix: "/routers" })
 		},
 	})
 
-	.post("/", routerHandler.createRouter, {
+	.post("/add", routerHandler.createRouter, {
 		body: t.Object({
 			name: t.String({
 				minLength: 3,
@@ -54,9 +54,9 @@ export const routerRoutes = new Elysia({ prefix: "/routers" })
 		},
 	})
 
-	.get("/:id", routerHandler.getRouterById, {
+	.get("/:router_id", routerHandler.getRouterById, {
 		params: t.Object({
-			id: t.String({ pattern: "^[0-9]+$" }),
+			router_id: t.String({ pattern: "^[0-9]+$" }),
 		}),
 		detail: {
 			summary: "Get router by ID",
@@ -65,9 +65,9 @@ export const routerRoutes = new Elysia({ prefix: "/routers" })
 		},
 	})
 
-	.put("/:id", routerHandler.updateRouter, {
+	.put("/:router_id/update", routerHandler.updateRouter, {
 		params: t.Object({
-			id: t.String({ pattern: "^[0-9]+$" }),
+			router_id: t.String({ pattern: "^[0-9]+$" }),
 		}),
 		body: t.Object({
 			name: t.Optional(
@@ -107,9 +107,9 @@ export const routerRoutes = new Elysia({ prefix: "/routers" })
 		},
 	})
 
-	.delete("/:id", routerHandler.deleteRouter, {
+	.delete("/:router_id/delete", routerHandler.deleteRouter, {
 		params: t.Object({
-			id: t.String({ pattern: "^[0-9]+$" }),
+			router_id: t.String({ pattern: "^[0-9]+$" }),
 		}),
 		detail: {
 			summary: "Delete router",
@@ -118,9 +118,9 @@ export const routerRoutes = new Elysia({ prefix: "/routers" })
 		},
 	})
 
-	.post("/:id/test-connection", routerHandler.testConnection, {
+	.post("/:router_id/test-connection", routerHandler.testConnection, {
 		params: t.Object({
-			id: t.String({ pattern: "^[0-9]+$" }),
+			router_id: t.String({ pattern: "^[0-9]+$" }),
 		}),
 		detail: {
 			summary: "Test router connection",
@@ -129,9 +129,9 @@ export const routerRoutes = new Elysia({ prefix: "/routers" })
 		},
 	})
 
-	.get("/:id/info", routerHandler.getRouterInfo, {
+	.get("/:router_id/info", routerHandler.getRouterInfo, {
 		params: t.Object({
-			id: t.String({ pattern: "^[0-9]+$" }),
+			router_id: t.String({ pattern: "^[0-9]+$" }),
 		}),
 		detail: {
 			summary: "Get router system information",
@@ -140,23 +140,31 @@ export const routerRoutes = new Elysia({ prefix: "/routers" })
 		},
 	})
 
-	.get("/:id/profiles", routerHandler.getRouterProfiles, {
+	.get("/:router_id/pppoe/profiles", routerHandler.getRouterPPPoEProfiles, {
 		params: t.Object({
-			id: t.String({ pattern: "^[0-9]+$" }),
-		}),
-		query: t.Object({
-			type: t.Optional(t.Union([t.Literal("pppoe"), t.Literal("hotspot")])),
+			router_id: t.String({ pattern: "^[0-9]+$" }),
 		}),
 		detail: {
 			summary: "Get router profiles",
-			description: "Retrieve PPPoE and/or Hotspot profiles from the router",
+			description: "Retrieve PPPoE profiles from the router",
 			tags: ["Routers"],
 		},
 	})
 
-	.get("/:id/interfaces", routerHandler.getRouterInterfaces, {
+	.get("/:router_id/hotspot/profiles", routerHandler.getRouterHotspotProfiles, {
 		params: t.Object({
-			id: t.String({ pattern: "^[0-9]+$" }),
+			router_id: t.String({ pattern: "^[0-9]+$" }),
+		}),
+		detail: {
+			summary: "Get router profiles",
+			description: "Retrieve Hotspot profiles from the router",
+			tags: ["Routers"],
+		},
+	})
+
+	.get("/:router_id/interfaces", routerHandler.getRouterInterfaces, {
+		params: t.Object({
+			router_id: t.String({ pattern: "^[0-9]+$" }),
 		}),
 		detail: {
 			summary: "Get router interfaces",
@@ -165,20 +173,10 @@ export const routerRoutes = new Elysia({ prefix: "/routers" })
 		},
 	})
 
-	.get("/:id/statistics", routerHandler.getRouterStatistics, {
-		params: t.Object({
-			id: t.String({ pattern: "^[0-9]+$" }),
-		}),
-		detail: {
-			summary: "Get router statistics",
-			description: "Retrieve statistics and summary for a specific router",
-			tags: ["Routers"],
-		},
-	})
 
-	.post("/:id/torch", routerHandler.startTorchMonitoring, {
+	.post("/:router_id/torch", routerHandler.startTorchMonitoring, {
 		params: t.Object({
-			id: t.String({ pattern: "^[0-9]+$" }),
+			router_id: t.String({ pattern: "^[0-9]+$" }),
 		}),
 		body: t.Object({
 			interface: t.String({

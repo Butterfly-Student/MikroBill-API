@@ -11,6 +11,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { hostname } from "os";
+import { gen_random_uuid } from "@/utils/database.utils";
 
 // Users table
 export const users = pgTable(
@@ -44,7 +45,7 @@ export const routers = pgTable(
     id: serial("id").primaryKey(),
     uuid: uuid("uuid").defaultRandom().notNull().unique(),
     name: varchar("name", { length: 100 }).notNull(),
-    hostname: varchar("ip_address", { length: 45 }).notNull(),
+    hostname: varchar("hostname", { length: 45 }).notNull(),
     username: varchar("username", { length: 50 }).notNull(),
     password: varchar("password", { length: 255 }).notNull(),
     keepalive: boolean("keepalive").default(true),
@@ -211,6 +212,7 @@ export type NewRole = typeof roles.$inferInsert;
 export type Resource = typeof resources.$inferSelect;
 export type NewResource = typeof resources.$inferInsert;
 export type Action = typeof actions.$inferSelect;
+
 export type NewAction = typeof actions.$inferInsert;
 export type Permission = typeof permissions.$inferSelect;
 export type NewPermission = typeof permissions.$inferInsert;

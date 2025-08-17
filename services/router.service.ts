@@ -1,24 +1,23 @@
-import { hostname } from 'os';
-import { customers, NewRouter, session_users } from "@/database/schema/mikrotik";
+// router.service.ts
+
+import { customers, hotspot_active_sessions, NewRouter, ppp_active_sessions } from "@/database/schema/mikrotik";
 import { routers } from "@/database/schema/users";
 import { db } from "@/lib/db";
 import { createMikrotikClient } from "@/lib/mikrotik/client";
 import { PaginationQuery } from "@/types/api.types";
 import { eq, like, and, count, or, ne } from "drizzle-orm";
 
-
 interface RouterQuery extends PaginationQuery {
 	search?: string;
-	status?: "active" | "inactive";
+	status?: "online" | "offline" | "error";
 	location?: string;
+	is_active?: boolean;
 }
-
 
 interface UpdateRouterRequest extends Partial<NewRouter> {}
 
-
 export const getAllRouters = async (query: RouterQuery) => {
-	const { page = 1, limit = 10, search, status, location } = query;
+	const { page = 1, limit = 10, search, status, location, is_active } = query;
 	const offset = (page - 1) * limit;
 
 	// Build where conditions
@@ -36,12 +35,15 @@ export const getAllRouters = async (query: RouterQuery) => {
 	}
 
 	if (status) {
-		const isActive = status === "active";
-		conditions.push(eq(routers.is_active, isActive));
+		conditions.push(eq(routers.status, status));
 	}
 
 	if (location) {
 		conditions.push(like(routers.location, `%${location}%`));
+	}
+
+	if (is_active !== undefined) {
+		conditions.push(eq(routers.is_active, is_active));
 	}
 
 	const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
@@ -62,8 +64,14 @@ export const getAllRouters = async (query: RouterQuery) => {
 				limit: 5,
 				orderBy: (customers, { desc }) => [desc(customers.created_at)],
 			},
-			session_users: {
-				where: (session_users, { eq }) => eq(session_users.is_active, true),
+			ppp_active_sessions: {
+				where: (ppp_active_sessions, { eq }) =>
+					eq(ppp_active_sessions.status, "active"),
+				limit: 10,
+			},
+			hotspot_active_sessions: {
+				where: (hotspot_active_sessions, { eq }) =>
+					eq(hotspot_active_sessions.status, "active"),
 				limit: 10,
 			},
 		},
@@ -83,12 +91,31 @@ export const getRouterById = async (id: number) => {
 			customers: {
 				orderBy: (customers, { desc }) => [desc(customers.created_at)],
 			},
-			session_users: {
+			ppp_active_sessions: {
 				with: {
 					customer: true,
-					profile: true,
+					ppp_user: {
+						with: {
+							profile: true,
+						},
+					},
 				},
-				orderBy: (session_users, { desc }) => [desc(session_users.created_at)],
+				orderBy: (ppp_active_sessions, { desc }) => [
+					desc(ppp_active_sessions.created_at),
+				],
+			},
+			hotspot_active_sessions: {
+				with: {
+					customer: true,
+					hotspot_user: {
+						with: {
+							profile: true,
+						},
+					},
+				},
+				orderBy: (hotspot_active_sessions, { desc }) => [
+					desc(hotspot_active_sessions.created_at),
+				],
 			},
 		},
 	});
@@ -101,58 +128,75 @@ export const getRouterById = async (id: number) => {
 };
 
 export const createRouter = async (data: NewRouter) => {
-	// Check if name already exists
+	// Cek name unik
 	const existingName = await db.query.routers.findFirst({
 		where: eq(routers.name, data.name),
 	});
+	if (existingName) throw new Error("Router name already exists");
 
-	if (existingName) {
-		throw new Error("Router name already exists");
-	}
-
-	// Check if hostname:port combination already exists
+	// Cek host+port unik
 	const existingHost = await db.query.routers.findFirst({
 		where: and(
 			eq(routers.hostname, data.hostname),
-			eq(routers.port, data.port ?? 0)
+			eq(routers.port, data.port ?? 8728)
 		),
 	});
-
-	if (existingHost) {
+	if (existingHost)
 		throw new Error("Router with this hostname and port already exists");
-	}
 
-	const routerData: NewRouter = {
-		...data,
-		is_active: data.is_active ?? true,
-		last_seen: null,
-		status: "unknown",
-	};
+	// Insert awal
+	const [newRouter] = await db
+		.insert(routers)
+		.values({
+			...data,
+			is_active: data.is_active ?? true,
+			last_seen: null,
+			status: "offline", // default
+			port: data.port ?? 8728,
+			timeout: data.timeout ?? 300000,
+			keepalive: data.keepalive ?? true,
+		})
+		.returning();
 
-	const [newRouter] = await db.insert(routers).values(routerData).returning();
-
-	// Test connection after creating
-  const client = await createMikrotikClient(newRouter.id);
+	let statusUpdate: Partial<typeof routers.$inferInsert> = { status: "error" };
 
 	try {
+		const client = await createMikrotikClient(newRouter.id);
 		const connectionTest = await client.getSystemInfo();
+
 		if (connectionTest) {
-			await db
-				.update(routers)
-				.set({
-					status: "connected",
-					last_seen: new Date(),
-				})
-				.where(eq(routers.id, newRouter.id));
+			statusUpdate = {
+				status: "online",
+				last_seen: new Date(),
+				version: connectionTest.version ?? null,
+				uptime: connectionTest.uptime ?? null,
+			};
 		}
-	} catch (error:any) {
+	} catch (err: any) {
 		console.warn(
-			`Failed to test connection for new router ${newRouter.id}:`,
-			error.message
+			`Failed to test connection for router ${newRouter.id}:`,
+			err.message
 		);
 	}
 
-	return newRouter;
+	// update status
+	await db
+		.update(routers)
+		.set(statusUpdate)
+		.where(eq(routers.id, newRouter.id));
+
+	// fetch ulang - PERBAIKAN: simpan hasil query ke variabel
+	const updatedRouter = await db.query.routers.findFirst({
+		where: eq(routers.id, newRouter.id),
+		with: {
+			customers: true,
+			ppp_active_sessions: true,
+			hotspot_active_sessions: true,
+		},
+	});
+
+	// ⬇️ hanya 1 kali return
+	return updatedRouter
 };
 
 export const updateRouter = async (id: number, data: UpdateRouterRequest) => {
@@ -188,6 +232,7 @@ export const updateRouter = async (id: number, data: UpdateRouterRequest) => {
 		const hostExists = await db.query.routers.findFirst({
 			where: and(
 				eq(routers.hostname, hostname),
+				eq(routers.port, port ?? 8728),
 				ne(routers.id, id)
 			),
 		});
@@ -197,26 +242,89 @@ export const updateRouter = async (id: number, data: UpdateRouterRequest) => {
 		}
 	}
 
+	// Update router
 	const [updatedRouter] = await db
 		.update(routers)
 		.set({ ...data, updated_at: new Date() })
 		.where(eq(routers.id, id))
 		.returning();
 
-	return updatedRouter;
+	let statusUpdate: Partial<typeof routers.$inferInsert> = {};
+
+	// Test connection after updating if connection details changed
+	if (data.hostname || data.port || data.username || data.password) {
+		try {
+			const client = await createMikrotikClient(updatedRouter.id);
+			const connectionTest = await client.getSystemInfo();
+
+			if (connectionTest) {
+				statusUpdate = {
+					status: "online",
+					last_seen: new Date(),
+					version: connectionTest.version || null,
+					uptime: connectionTest.uptime || null,
+				};
+			}
+		} catch (error: any) {
+			console.warn(
+				`Failed to test connection for updated router ${updatedRouter.id}:`,
+				error.message
+			);
+
+			// Update status to error if connection fails
+			statusUpdate = {
+				status: "error",
+			};
+		}
+
+		// Update status jika ada perubahan koneksi
+		if (Object.keys(statusUpdate).length > 0) {
+			await db
+				.update(routers)
+				.set(statusUpdate)
+				.where(eq(routers.id, updatedRouter.id));
+		}
+	}
+
+	// Fetch ulang dengan relasi seperti createRouter
+	const finalRouter = await db.query.routers.findFirst({
+		where: eq(routers.id, updatedRouter.id),
+		with: {
+			customers: true,
+			ppp_active_sessions: true,
+			hotspot_active_sessions: true,
+		},
+	});
+
+	// Return dengan format yang sama seperti createRouter
+	return finalRouter;
 };
 
 export const deleteRouter = async (id: number) => {
-	// Check if router has active sessions
-	const activeSessions = await db.query.session_users.findMany({
+	// Check if router has active PPPoE sessions
+	const activePppSessions = await db.query.ppp_active_sessions.findMany({
 		where: and(
-			eq(session_users.router_id, id),
-			eq(session_users.is_active, true)
+			eq(ppp_active_sessions.router_id, id),
+			eq(ppp_active_sessions.status, "active")
 		),
 	});
 
-	if (activeSessions.length > 0) {
-		throw new Error("Cannot delete router with active sessions");
+	if (activePppSessions.length > 0) {
+		throw new Error("Cannot delete router with active PPPoE sessions");
+	}
+
+	// Check if router has active Hotspot sessions
+	const activeHotspotSessions = await db.query.hotspot_active_sessions.findMany(
+		{
+			where: and(
+				eq(hotspot_active_sessions.router_id, id),
+				eq(hotspot_active_sessions.status, "active")
+			),
+		}
+	);
+
+	if (activeHotspotSessions.length > 0) {
+		throw new Error("Cannot delete router with active Hotspot sessions");
 	}
 
 	// Check if router has customers
@@ -248,22 +356,35 @@ export const testRouterConnection = async (id: number) => {
 	if (!router) {
 		throw new Error("Router not found");
 	}
-    const client = await createMikrotikClient(id);
 
-	const connectionTest = await client.getSystemInfo();
+	const client = await createMikrotikClient(id);
 
-	// Update router connection status
-	await db
-		.update(routers)
-		.set({
-			status: connectionTest.connected
-				? "connected"
-				: "disconnected",
-			last_seen: connectionTest.connected ? new Date() : router.last_seen,
-		})
-		.where(eq(routers.id, id));
+	try {
+		const connectionTest = await client.getSystemInfo();
 
-	return connectionTest;
+		// Update router connection status
+		await db
+			.update(routers)
+			.set({
+				status: connectionTest.connected ? "online" : "offline",
+				last_seen: connectionTest.connected ? new Date() : router.last_seen,
+				version: connectionTest.version || router.version,
+				uptime: connectionTest.uptime || router.uptime,
+			})
+			.where(eq(routers.id, id));
+
+		return connectionTest;
+	} catch (error) {
+		// Update connection status to error
+		await db
+			.update(routers)
+			.set({
+				status: "error",
+			})
+			.where(eq(routers.id, id));
+
+		throw error;
+	}
 };
 
 export const getRouterInfo = async (id: number) => {
@@ -274,16 +395,17 @@ export const getRouterInfo = async (id: number) => {
 	if (!router) {
 		throw new Error("Router not found");
 	}
-    const client = await createMikrotikClient(id);
+
+	const client = await createMikrotikClient(id);
 
 	try {
 		const routerInfo = await client.getIdentity();
 
-		// Update last seen
+		// Update last seen and status
 		await db
 			.update(routers)
 			.set({
-				status: "connected",
+				status: "online",
 				last_seen: new Date(),
 			})
 			.where(eq(routers.id, id));
@@ -293,11 +415,11 @@ export const getRouterInfo = async (id: number) => {
 			...routerInfo,
 		};
 	} catch (error) {
-		// Update connection status to disconnected
+		// Update connection status to error
 		await db
 			.update(routers)
 			.set({
-				status: "disconnected",
+				status: "error",
 			})
 			.where(eq(routers.id, id));
 
@@ -305,99 +427,55 @@ export const getRouterInfo = async (id: number) => {
 	}
 };
 
-export const getRouterProfiles = async (
-	id: number,
-	type?: "pppoe" | "hotspot"
-) => {
-	const router = await db.query.routers.findFirst({
-		where: eq(routers.id, id),
-	});
+export const getPPPoEProfiles = async (id: number) => {
+	const client = await createMikrotikClient(id);
+	return await client.getPPPoEProfiles();
+};
 
-	if (!router) {
-		throw new Error("Router not found");
-	}
-
-    const client = await createMikrotikClient(id);
-
-	try {
-		let profiles = [];
-
-		if (!type || type === "pppoe") {
-			const pppoeProfiles = await client.getPPPoEProfiles();
-			profiles = [...profiles, ...pppoeProfiles];
-		}
-
-		if (!type || type === "hotspot") {
-			const hotspotProfiles = await client.getHotspotProfiles();
-			profiles = [...profiles, ...hotspotProfiles];
-		}
-
-		return profiles;
-	} catch (error: any) {
-		throw new Error(`Failed to get router profiles: ${error.message}`);
-	}
+export const getHotspotProfiles = async (id: number) => {
+	const client = await createMikrotikClient(id);
+	return await client.getHotspotProfiles();
 };
 
 export const getRouterInterfaces = async (id: number) => {
-	const router = await db.query.routers.findFirst({
-		where: eq(routers.id, id),
-	});
-    const client = await createMikrotikClient(id);
-
-
-	if (!router) {
-		throw new Error("Router not found");
-	}
-
+	const client = await createMikrotikClient(id);
 	return await client.getInterfaces();
 };
 
-export const getRouterStatistics = async (id: number) => {
-	const [router, customer, activeSessions, allSessions] = await Promise.all([
-		db.query.routers.findFirst({
-			where: eq(routers.id, id),
-		}),
-		db.query.customers.findMany({
-			where: eq(customers.router_id, id),
-		}),
-		db.query.session_users.findMany({
-			where: and(
-				eq(session_users.router_id, id),
-				eq(session_users.is_active, true)
-			),
-		}),
-		db.query.session_users.findMany({
-			where: eq(session_users.router_id, id),
-		}),
-	]);
+export const getRouterStats = async (id: number) => {
+	const router = await db.query.routers.findFirst({
+		where: eq(routers.id, id),
+		with: {
+			customers: true,
+			ppp_active_sessions: {
+				where: (ppp_active_sessions, { eq }) =>
+					eq(ppp_active_sessions.status, "active"),
+			},
+			hotspot_active_sessions: {
+				where: (hotspot_active_sessions, { eq }) =>
+					eq(hotspot_active_sessions.status, "active"),
+			},
+		},
+	});
 
 	if (!router) {
 		throw new Error("Router not found");
 	}
 
-	const activeCustomers = customer.filter((c) => c.is_active).length;
-	const pppoeUsers = allSessions.filter(
-		(s) => s.type === "pppoe"
-	).length;
-	const hotspotUsers = allSessions.filter(
-		(s) => s.type === "hotspot"
-	).length;
-	const vpnUsers = allSessions.filter((s) => s.type === "vpn").length;
-
 	return {
-		router,
-		statistics: {
-			totalCustomers: customer.length,
-			activeCustomers,
-			activeSessions: activeSessions.length,
-			totalSessions: allSessions.length,
-			sessionTypes: {
-				pppoe: pppoeUsers,
-				hotspot: hotspotUsers,
-				vpn: vpnUsers,
-			},
-			connectionStatus: router.status,
-			lastSeen: router.last_seen,
+		total_customers: router.customers.length,
+		active_ppp_sessions: router.ppp_active_sessions.length,
+		active_hotspot_sessions: router.hotspot_active_sessions.length,
+		total_active_sessions:
+			router.ppp_active_sessions.length + router.hotspot_active_sessions.length,
+		router_info: {
+			id: router.id,
+			name: router.name,
+			hostname: router.hostname,
+			status: router.status,
+			last_seen: router.last_seen,
+			version: router.version,
+			uptime: router.uptime,
 		},
 	};
 };

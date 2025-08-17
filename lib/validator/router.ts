@@ -20,12 +20,6 @@ export const createRouterSchema = z.object({
 		.min(1, "Port must be greater than 0")
 		.max(65535, "Port must be less than 65536")
 		.default(8728),
-	api_port: z
-		.number()
-		.int("API port must be an integer")
-		.min(1, "API port must be greater than 0")
-		.max(65535, "API port must be less than 65536")
-		.optional(),
 	timeout: z
 		.number()
 		.int("Timeout must be an integer")

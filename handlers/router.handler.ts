@@ -5,13 +5,13 @@ import {
 	createErrorResponse,
 	createPaginatedResponse,
 } from "@/utils/response.utils";
+import { PaginationQuery } from "@/types/api.types";
 
-interface RouterQuery {
-	page?: number;
-	limit?: number;
+interface RouterQuery extends PaginationQuery {
 	search?: string;
-	status?: "active" | "inactive";
+	status?: "online" | "offline" | "error";
 	location?: string;
+	is_active?: boolean;
 }
 
 interface CreateRouterRequest {
@@ -67,11 +67,11 @@ export const updateRouter = async ({
 	params,
 	body,
 }: {
-	params: { id: string };
+	params: { router_id: number };
 	body: UpdateRouterRequest;
 }) => {
 	try {
-		const routerId = parseInt(params.id);
+		const routerId = params.router_id;
 
 		if (isNaN(routerId)) {
 			return createErrorResponse("Invalid router ID", "Validation error");
@@ -84,9 +84,9 @@ export const updateRouter = async ({
 	}
 };
 
-export const deleteRouter = async ({ params }: { params: { id: string } }) => {
+export const deleteRouter = async ({ params }: { params: { router_id: number } }) => {
 	try {
-		const routerId = parseInt(params.id);
+		const routerId = params.router_id;
 
 		if (isNaN(routerId)) {
 			return createErrorResponse("Invalid router ID", "Validation error");
@@ -139,35 +139,6 @@ export const getRouterInfo = async ({ params }: { params: { id: string } }) => {
 	}
 };
 
-export const getRouterProfiles = async ({
-	params,
-	query,
-}: {
-	params: { id: string };
-	query: { type?: "pppoe" | "hotspot" };
-}) => {
-	try {
-		const routerId = parseInt(params.id);
-
-		if (isNaN(routerId)) {
-			return createErrorResponse("Invalid router ID", "Validation error");
-		}
-
-		const profiles = await routerService.getRouterProfiles(
-			routerId,
-			query.type
-		);
-		return createSuccessResponse(
-			profiles,
-			"Router profiles retrieved successfully"
-		);
-	} catch (error: any) {
-		return createErrorResponse(
-			error.message,
-			"Failed to retrieve router profiles"
-		);
-	}
-};
 
 export const getRouterInterfaces = async ({
 	params,
@@ -194,7 +165,8 @@ export const getRouterInterfaces = async ({
 	}
 };
 
-export const getRouterStatistics = async ({
+// PPPoE
+export const getRouterPPPoEProfiles = async ({
 	params,
 }: {
 	params: { id: string };
@@ -206,18 +178,47 @@ export const getRouterStatistics = async ({
 			return createErrorResponse("Invalid router ID", "Validation error");
 		}
 
-		const statistics = await routerService.getRouterStatistics(routerId);
+		const profiles = await routerService.getPPPoEProfiles(routerId);
+
 		return createSuccessResponse(
-			statistics,
-			"Router statistics retrieved successfully"
+			profiles,
+			"PPPoE profiles retrieved successfully"
 		);
 	} catch (error: any) {
 		return createErrorResponse(
 			error.message,
-			"Failed to retrieve router statistics"
+			"Failed to retrieve PPPoE profiles"
 		);
 	}
 };
+
+// Hotspot
+export const getRouterHotspotProfiles = async ({
+	params,
+}: {
+	params: { id: string };
+}) => {
+	try {
+		const routerId = parseInt(params.id);
+
+		if (isNaN(routerId)) {
+			return createErrorResponse("Invalid router ID", "Validation error");
+		}
+
+		const profiles = await routerService.getHotspotProfiles(routerId);
+
+		return createSuccessResponse(
+			profiles,
+			"Hotspot profiles retrieved successfully"
+		);
+	} catch (error: any) {
+		return createErrorResponse(
+			error.message,
+			"Failed to retrieve Hotspot profiles"
+		);
+	}
+};
+
 
 export const startTorchMonitoring = async ({
 	params,

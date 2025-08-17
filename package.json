@@ -18,7 +18,8 @@
 	"devDependencies": {
 		"@types/bun": "latest",
 		"bun-types": "latest",
-		"drizzle-kit": "^0.31.4"
+		"drizzle-kit": "^0.31.4",
+		"ioredis": "^5.7.0"
 	},
 	"peerDependencies": {
 		"typescript": "^5"
@@ -27,11 +28,15 @@
 		"@elysiajs/cors": "^1.3.3",
 		"@elysiajs/swagger": "^1.3.1",
 		"bcryptjs": "^3.0.2",
+		"bullmq": "^5.56.9",
 		"dotenv": "^17.2.1",
 		"drizzle-orm": "^0.44.4",
 		"elysia": "^1.3.8",
+		"node-cron": "^4.2.1",
 		"node-routeros": "^1.6.9",
 		"postgres": "^3.4.7",
+		"redis": "^5.8.0",
+		"routeros-api": "^1.0.1",
 		"routeros-client": "^1.1.2"
 	}
 }

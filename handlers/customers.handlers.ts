@@ -10,10 +10,19 @@ import type {
 	UpdateCustomerRequest,
 } from "../types/api.types";
 
-export const getCustomers = async ({ query }: { query: CustomerQuery }) => {
+export const getCustomers = async (
+	{ 
+		query,
+		params
+	}: 
+	{
+		query: CustomerQuery;
+		params: { router_id: number };
+	}) => {
 	try {
 		const { customers, pagination } = await customerService.getAllCustomers(
-			query
+			query,
+			params.router_id
 		);
 		return createPaginatedResponse(
 			customers,
@@ -28,7 +37,7 @@ export const getCustomers = async ({ query }: { query: CustomerQuery }) => {
 export const getCustomerById = async ({
 	params,
 }: {
-	params: { id: string };
+	params: { id: string, router_id: number };
 }) => {
 	try {
 		const customerId = parseInt(params.id);
@@ -37,7 +46,7 @@ export const getCustomerById = async ({
 			return createErrorResponse("Invalid customer ID", "Validation error");
 		}
 
-		const customer = await customerService.getCustomerById(customerId);
+		const customer = await customerService.getCustomerById(customerId, params.router_id);
 		return createSuccessResponse(customer, "Customer retrieved successfully");
 	} catch (error: any) {
 		return createErrorResponse(error.message, "Failed to retrieve customer");
@@ -46,11 +55,13 @@ export const getCustomerById = async ({
 
 export const createCustomer = async ({
 	body,
+	params
 }: {
 	body: CreateCustomerRequest;
+	params: { router_id: number };
 }) => {
 	try {
-		const customer = await customerService.createCustomer(body);
+		const customer = await customerService.createCustomer(body, params.router_id);
 		return createSuccessResponse(customer, "Customer created successfully");
 	} catch (error: any) {
 		return createErrorResponse(error.message, "Failed to create customer");
@@ -61,7 +72,7 @@ export const updateCustomer = async ({
 	params,
 	body,
 }: {
-	params: { id: string };
+	params: { id: string, router_id: number };
 	body: UpdateCustomerRequest;
 }) => {
 	try {
@@ -71,7 +82,7 @@ export const updateCustomer = async ({
 			return createErrorResponse("Invalid customer ID", "Validation error");
 		}
 
-		const customer = await customerService.updateCustomer(customerId, body);
+		const customer = await customerService.updateCustomer(customerId, params.router_id, body);
 		return createSuccessResponse(customer, "Customer updated successfully");
 	} catch (error: any) {
 		return createErrorResponse(error.message, "Failed to update customer");
@@ -81,7 +92,7 @@ export const updateCustomer = async ({
 export const deleteCustomer = async ({
 	params,
 }: {
-	params: { id: string };
+	params: { id: string, router_id: number };
 }) => {
 	try {
 		const customerId = parseInt(params.id);
@@ -90,7 +101,7 @@ export const deleteCustomer = async ({
 			return createErrorResponse("Invalid customer ID", "Validation error");
 		}
 
-		await customerService.deleteCustomer(customerId);
+		await customerService.deleteCustomer(customerId, params.router_id);
 		return createSuccessResponse(null, "Customer deleted successfully");
 	} catch (error: any) {
 		return createErrorResponse(error.message, "Failed to delete customer");
@@ -100,7 +111,7 @@ export const deleteCustomer = async ({
 export const getCustomerSessions = async ({
 	params,
 }: {
-	params: { id: string };
+	params: { id: string, router_id: number };
 }) => {
 	try {
 		const customerId = parseInt(params.id);
@@ -109,7 +120,7 @@ export const getCustomerSessions = async ({
 			return createErrorResponse("Invalid customer ID", "Validation error");
 		}
 
-		const sessions = await customerService.getCustomerSessions(customerId);
+		const sessions = await customerService.getCustomerSessions(customerId, params.router_id);
 		return createSuccessResponse(
 			sessions,
 			"Customer sessions retrieved successfully"
@@ -125,7 +136,7 @@ export const getCustomerSessions = async ({
 export const getCustomerStatistics = async ({
 	params,
 }: {
-	params: { id: string };
+	params: { id: string, router_id: number };
 }) => {
 	try {
 		const customerId = parseInt(params.id);
@@ -134,7 +145,7 @@ export const getCustomerStatistics = async ({
 			return createErrorResponse("Invalid customer ID", "Validation error");
 		}
 
-		const statistics = await customerService.getCustomerStatistics(customerId);
+		const statistics = await customerService.getCustomerStatistics(customerId, params.router_id);
 		return createSuccessResponse(
 			statistics,
 			"Customer statistics retrieved successfully"

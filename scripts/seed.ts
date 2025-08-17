@@ -1,15 +1,9 @@
 import "dotenv/config";
-import { drizzle } from "drizzle-orm/node-postgres";
-import { Pool } from "pg";
 import * as schema from "@/database/schema/users";
 import { eq, and } from "drizzle-orm";
 import bcrypt from "bcryptjs";
+import { db } from "@/lib/db";
 
-const pool = new Pool({
-	connectionString: process.env.DATABASE_URL!,
-});
-
-const db = drizzle(pool, { schema });
 
 async function main() {
 	console.log("🌱 Starting database seeding...");
@@ -552,8 +546,6 @@ async function main() {
 	} catch (error) {
 		console.error("❌ Error during seeding:", error);
 		throw error;
-	} finally {
-		await pool.end();
 	}
 }
 

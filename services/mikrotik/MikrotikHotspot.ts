@@ -1,91 +1,208 @@
 import { db } from "@/lib/db/index";
 import {
-	session_profiles,
-	session_users,
+	hotspot_profiles,
+	hotspot_users,
+	hotspot_active_sessions,
+	hotspot_usage_sessions,
 	voucher_batches,
 	vouchers,
-	type SessionProfile,
-	type NewSessionProfile,
-	type SessionUser,
-	type NewSessionUser,
-	type VoucherBatch,
-	type NewVoucherBatch,
-	type Voucher,
-	type NewVoucher,
+	type HotspotProfile,
+	type NewHotspotProfile,
+	type HotspotUser,
+	type NewHotspotUser,
+	type HotspotActiveSession,
+	type NewHotspotActiveSession,
+	type HotspotUsageSession,
+	type NewHotspotUsageSession,
+	type HotspotVoucherBatch,
+	type NewHotspotVoucherBatch,
+	type HotspotVoucher,
+	type NewHotspotVoucher,
 } from "@/database/schema/mikrotik";
-import { eq, and, desc, count } from "drizzle-orm";
+import {
+	eq,
+	desc,
+	count,
+	inArray,
+	and,
+	or,
+	gte,
+	lte,
+	isNull,
+} from "drizzle-orm";
 import { MikrotikClient } from "../../lib/mikrotik/client";
-
-export interface HotspotProfile {
-	name: string;
-	sessionTimeout?: string;
-	idleTimeout?: string;
-	keepaliveTimeout?: string;
-	statusAutorefresh?: string;
-	sharedUsers?: number;
-	rateLimit?: string;
-	transparentProxy?: boolean;
-	addressList?: string;
-	macCookieTimeout?: string;
-	addMacCookie?: boolean;
-	comment?: string;
-}
-
-export interface HotspotUser {
-	name: string;
-	password?: string;
-	profile?: string;
-	limitUptime?: string;
-	limitBytesIn?: number;
-	limitBytesOut?: number;
-	limitBytesTotal?: number;
-	comment?: string;
-}
+import { IRosOptions } from "node-routeros";
+import { generateOnLoginScript } from "@/utils/mikrotik.utils";
+import { MikrotikCommandGenerator } from "@/utils/mikrotik_hotspot";
 
 export interface VoucherConfig {
 	length?: number;
 	prefix?: string;
 	suffix?: string;
-	characters?: string; // Changed from 'charset' to match form field
-	passwordMode?: 'same_as_username' | 'random' | 'custom'; // Added custom mode
-	customPassword?: string; // For custom password
+	characters?: string;
+	passwordMode?: "same_as_username" | "random" | "custom";
+	customPassword?: string;
 }
 
 export interface SingleVoucherConfig {
 	router_id: number;
-	profile_id?: number;
-	username: string; // Custom username
-	password?: string; // Custom password (optional, will use same_as_username if not provided)
+	profile?: string;
+	username: string;
+	password?: string;
 	comment?: string;
 	created_by?: number;
+	validity_hours?: number;
+	start_at?: Date;
+	end_at?: Date;
+	uptime_limit?: string;
+	bytes_in_limit?: number;
+	bytes_out_limit?: number;
+	rate_limit?: string;
+	mac_address?: string;
 }
 
 export interface BulkVoucherConfig extends VoucherConfig {
-	total_generated: number; // Changed from 'count' to match form field
-	batch_name: string; // Changed from 'batchName' to match form field
-	router_id: number; // Added router_id field
-	profile_id?: number; // Changed from 'profileId' to match form field, made optional
+	total_generated: number;
+	batch_name: string;
+	router_id: number;
+	profile?: string;
 	comment?: string;
-	created_by?: number; // Made optional
-	generation_mode?: 'random' | 'sequential'; // Added generation mode
+	created_by?: number;
+	generation_mode?: "random" | "sequential";
+	validity_hours?: number;
+	start_date?: Date;
+	end_date?: Date;
 }
 
+interface BulkUpdateVoucherConfig {
+	batch_id?: number;
+	router_id: number;
+	updates: {
+		profile?: string;
+		comment?: string;
+		status?: "unused" | "used" | "expired";
+		voucher_status?: "unused" | "used" | "expired";
+	};
+	updated_by?: number;
+	filters?: {
+		status?: "unused" | "used" | "expired";
+		unused_only?: boolean;
+		voucher_ids?: number[];
+		batch_ids?: number[];
+	};
+}
+
+interface BulkDeleteVoucherConfig {
+	batch_id?: number;
+	router_id: number;
+	deleted_by?: number;
+	filters?: {
+		status?: "unused" | "used" | "expired";
+		unused_only?: boolean;
+		voucher_ids?: number[];
+		batch_ids?: number[];
+	};
+	force_delete_active?: boolean;
+}
 
 export class MikrotikHotspot extends MikrotikClient {
+	static async createFromDatabase(
+		routerId: number,
+		overrideConfig?: Partial<IRosOptions>
+	): Promise<MikrotikHotspot> {
+		try {
+			if (!routerId || routerId <= 0) {
+				throw new Error("Invalid router ID provided");
+			}
+
+			const cachedClient = MikrotikClient.getCachedClient(routerId);
+			if (cachedClient && cachedClient instanceof MikrotikHotspot) {
+				console.log(
+					`♻️ Using cached MikrotikHotspot client for router ${routerId}`
+				);
+				return cachedClient;
+			}
+
+			if (cachedClient) {
+				await MikrotikClient.disconnectCachedClient(routerId);
+			}
+
+			const router = await db.query.routers.findFirst({
+				where: (r, { eq }) => eq(r.id, routerId),
+			});
+
+			if (!router) {
+				throw new Error(`Router with ID ${routerId} not found`);
+			}
+
+			if (!router.is_active) {
+				throw new Error(`Router ${router.name} is not active`);
+			}
+
+			const clientConfig: IRosOptions = {
+				host: overrideConfig?.host || router.hostname,
+				user: overrideConfig?.user || router.username,
+				password: overrideConfig?.password || router.password,
+				port: overrideConfig?.port || router.port || 8728,
+				timeout: overrideConfig?.timeout || router.timeout || 30000,
+				keepalive: overrideConfig?.keepalive ?? true,
+			};
+
+			if (!clientConfig.host || !clientConfig.user || !clientConfig.password) {
+				throw new Error(
+					"Missing required router configuration (host, user, password)"
+				);
+			}
+
+			console.log(
+				`🔌 Creating MikroTik Hotspot client for router: ${router.name} (${router.hostname})`
+			);
+
+			const hotspotClient = new MikrotikHotspot(clientConfig);
+			await hotspotClient.connectWithTimeout(clientConfig.timeout || 30000);
+
+			const clientCache = (MikrotikClient as any).clientCache;
+			if (clientCache && clientCache instanceof Map) {
+				clientCache.set(routerId, {
+					client: hotspotClient,
+					lastUsed: new Date(),
+					isConnected: true,
+				});
+			}
+
+			console.log(`✅ MikrotikHotspot client cached for router ${routerId}`);
+			return hotspotClient;
+		} catch (error) {
+			console.error(
+				`❌ Failed to create MikroTik Hotspot client for router ${routerId}:`,
+				error
+			);
+			await MikrotikClient.disconnectCachedClient(routerId);
+			throw error;
+		}
+	}
+
+	override async connectWithTimeout(timeout: number): Promise<void> {
+		const connectPromise = this.connect();
+		const timeoutPromise = new Promise<never>((_, reject) => {
+			setTimeout(
+				() => reject(new Error(`Connection timeout after ${timeout}ms`)),
+				timeout
+			);
+		});
+
+		await Promise.race([connectPromise, timeoutPromise]);
+	}
+
 	// ============ PROFILE MANAGEMENT ============
 
-	/**
-	 * Create hotspot profile - Database first approach
-	 */
 	async createProfile(
 		routerId: number,
-		profileData: HotspotProfile,
-		userId?: number
-	): Promise<SessionProfile> {
-		let createdProfile: SessionProfile | null = null;
+		profileData: NewHotspotProfile
+	): Promise<HotspotProfile> {
+		let createdProfile: HotspotProfile | null = null;
 
 		try {
-			// 1. Validate router exists and is active
 			const router = await db.query.routers.findFirst({
 				where: (r, { eq, and }) =>
 					and(eq(r.id, routerId), eq(r.is_active, true)),
@@ -95,14 +212,9 @@ export class MikrotikHotspot extends MikrotikClient {
 				throw new Error(`Router with ID ${routerId} not found or inactive`);
 			}
 
-			// 2. Check if profile name already exists for this router
-			const existingProfile = await db.query.session_profiles.findFirst({
-				where: (sp, { eq, and }) =>
-					and(
-						eq(sp.router_id, routerId),
-						eq(sp.name, profileData.name),
-						eq(sp.type, "hotspot")
-					),
+			const existingProfile = await db.query.hotspot_profiles.findFirst({
+				where: (hp, { eq, and }) =>
+					and(eq(hp.router_id, routerId), eq(hp.name, profileData.name)),
 			});
 
 			if (existingProfile) {
@@ -111,139 +223,58 @@ export class MikrotikHotspot extends MikrotikClient {
 				);
 			}
 
-			// 3. Prepare database record
-			const newProfile: NewSessionProfile = {
+			// Generate on-login script if provided
+			const onLoginScript =
+				profileData.on_login_script || generateOnLoginScript(profileData);
+
+			const newProfile: NewHotspotProfile = {
+				...profileData,
 				router_id: routerId,
-				name: profileData.name,
-				type: "hotspot",
-				network_config: {},
-				bandwidth_config: {
-					rateLimit: profileData.rateLimit,
-				},
-				timeout_config: {
-					sessionTimeout: profileData.sessionTimeout,
-					idleTimeout: profileData.idleTimeout,
-					keepaliveTimeout: profileData.keepaliveTimeout,
-					statusAutorefresh: profileData.statusAutorefresh,
-				},
-				limits: {},
-				security_config: {
-					transparentProxy: profileData.transparentProxy,
-					addressList: profileData.addressList,
-				},
-				advanced_config: {
-					sharedUsers: profileData.sharedUsers,
-					addMacCookie: profileData.addMacCookie,
-					macCookieTimeout: profileData.macCookieTimeout,
-				},
-				comment: profileData.comment,
+				on_login_script: onLoginScript,
 				synced_to_mikrotik: false,
-				is_active: true,
 			};
 
-			// 4. Create in database first
 			const [dbProfile] = await db
-				.insert(session_profiles)
+				.insert(hotspot_profiles)
 				.values(newProfile)
 				.returning();
-
 			createdProfile = dbProfile;
 
 			console.log(
 				`✅ Hotspot profile '${profileData.name}' created in database`
 			);
 
-			// 5. Create in MikroTik
+			// Create in MikroTik
 			await this.connect();
-
-			const mikrotikCommand = [
-				"/ip/hotspot/user/profile/add",
-				`=name=${profileData.name}`,
-			];
-
-			// Add optional parameters
-			if (profileData.sessionTimeout) {
-				mikrotikCommand.push(`=session-timeout=${profileData.sessionTimeout}`);
-			}
-			if (profileData.idleTimeout) {
-				mikrotikCommand.push(`=idle-timeout=${profileData.idleTimeout}`);
-			}
-			if (profileData.keepaliveTimeout) {
-				mikrotikCommand.push(
-					`=keepalive-timeout=${profileData.keepaliveTimeout}`
-				);
-			}
-			if (profileData.statusAutorefresh) {
-				mikrotikCommand.push(
-					`=status-autorefresh=${profileData.statusAutorefresh}`
-				);
-			}
-			if (profileData.sharedUsers !== undefined) {
-				mikrotikCommand.push(`=shared-users=${profileData.sharedUsers}`);
-			}
-			if (profileData.rateLimit) {
-				mikrotikCommand.push(`=rate-limit=${profileData.rateLimit}`);
-			}
-			if (profileData.transparentProxy !== undefined) {
-				mikrotikCommand.push(
-					`=transparent-proxy=${profileData.transparentProxy ? "yes" : "no"}`
-				);
-			}
-			if (profileData.addressList) {
-				mikrotikCommand.push(`=address-list=${profileData.addressList}`);
-			}
-			if (profileData.macCookieTimeout) {
-				mikrotikCommand.push(
-					`=mac-cookie-timeout=${profileData.macCookieTimeout}`
-				);
-			}
-			if (profileData.addMacCookie !== undefined) {
-				mikrotikCommand.push(
-					`=add-mac-cookie=${profileData.addMacCookie ? "yes" : "no"}`
-				);
-			}
-			if (profileData.comment) {
-				mikrotikCommand.push(`=comment=${profileData.comment}`);
-			}
-
+			const mikrotikCommand =
+				MikrotikCommandGenerator.generateHotspotProfileAddObject(newProfile);
 			const result = await this.connectedApi!.menu(
 				"/ip/hotspot/user/profile"
-			).add(
-				mikrotikCommand.slice(1).reduce((acc, param) => {
-					const [key, value] = param.split("=");
-					acc[key.replace("=", "")] = value;
-					return acc;
-				}, {} as any)
-			);
+			).add(mikrotikCommand);
 
-			// 6. Update database with MikroTik ID and sync status
-			await db
-				.update(session_profiles)
+			// Update with MikroTik ID
+			const [updatedProfile] = await db
+				.update(hotspot_profiles)
 				.set({
-					mikrotik_id: result.ret,
+					mikrotik_profile_id: result["id"],
 					synced_to_mikrotik: true,
 					updated_at: new Date(),
 				})
-				.where(eq(session_profiles.id, dbProfile.id));
+				.where(eq(hotspot_profiles.id, dbProfile.id))
+				.returning();
 
 			console.log(
-				`✅ Hotspot profile '${profileData.name}' synced to MikroTik with ID: ${result.ret}`
+				`✅ Hotspot profile '${profileData.name}' synced to MikroTik with ID: ${result["id"]}`
 			);
-
-			return {
-				...dbProfile,
-				mikrotik_id: result.ret,
-				synced_to_mikrotik: true,
-			};
+			return updatedProfile;
 		} catch (error) {
 			console.error("❌ Error creating hotspot profile:", error);
 
-			// Rollback: Delete from database if MikroTik creation failed
-			if (createdProfile) {
+			if (createdProfile?.id) {
 				try {
 					await db
-						.delete(session_profiles)
-						.where(eq(session_profiles.id, createdProfile.id));
+						.delete(hotspot_profiles)
+						.where(eq(hotspot_profiles.id, createdProfile.id));
 					console.log(
 						`🔄 Rolled back database record for profile '${profileData.name}'`
 					);
@@ -259,136 +290,53 @@ export class MikrotikHotspot extends MikrotikClient {
 		}
 	}
 
-	/**
-	 * Get all hotspot profiles for a router
-	 */
-	async getProfiles(routerId: number): Promise<SessionProfile[]> {
-		return await db.query.session_profiles.findMany({
-			where: (sp, { eq, and }) =>
-				and(
-					eq(sp.router_id, routerId),
-					eq(sp.type, "hotspot"),
-					eq(sp.is_active, true)
-				),
-			orderBy: (sp, { asc }) => [asc(sp.name)],
+	async getProfiles(routerId: number): Promise<HotspotProfile[]> {
+		return await db.query.hotspot_profiles.findMany({
+			where: (hp, { eq, and }) =>
+				and(eq(hp.router_id, routerId), eq(hp.is_active, true)),
+			orderBy: (hp, { desc }) => [desc(hp.created_at)],
 		});
 	}
 
-	/**
-	 * Update hotspot profile
-	 */
 	async updateProfile(
+		routerId: number,
 		profileId: number,
-		profileData: Partial<HotspotProfile>
-	): Promise<SessionProfile> {
-		const profile = await db.query.session_profiles.findFirst({
-			where: (sp, { eq }) => eq(sp.id, profileId),
+		profileData: Partial<NewHotspotProfile>
+	): Promise<HotspotProfile> {
+		const profile = await db.query.hotspot_profiles.findFirst({
+			where: (hp, { eq, and }) =>
+				and(eq(hp.id, profileId), eq(hp.router_id, routerId)),
 		});
 
 		if (!profile) {
-			throw new Error(`Profile with ID ${profileId} not found`);
-		}
-
-		if (!profile.mikrotik_id) {
-			throw new Error("Profile is not synced to MikroTik");
+			throw new Error(
+				`Profile with ID ${profileId} not found or doesn't belong to this router`
+			);
 		}
 
 		try {
-			// Update in MikroTik first
-			await this.connect();
-
-			const updateParams: any = {};
-
-			if (profileData.sessionTimeout)
-				updateParams["session-timeout"] = profileData.sessionTimeout;
-			if (profileData.idleTimeout)
-				updateParams["idle-timeout"] = profileData.idleTimeout;
-			if (profileData.keepaliveTimeout)
-				updateParams["keepalive-timeout"] = profileData.keepaliveTimeout;
-			if (profileData.statusAutorefresh)
-				updateParams["status-autorefresh"] = profileData.statusAutorefresh;
-			if (profileData.sharedUsers !== undefined)
-				updateParams["shared-users"] = profileData.sharedUsers;
-			if (profileData.rateLimit)
-				updateParams["rate-limit"] = profileData.rateLimit;
-			if (profileData.transparentProxy !== undefined)
-				updateParams["transparent-proxy"] = profileData.transparentProxy
-					? "yes"
-					: "no";
-			if (profileData.addressList)
-				updateParams["address-list"] = profileData.addressList;
-			if (profileData.macCookieTimeout)
-				updateParams["mac-cookie-timeout"] = profileData.macCookieTimeout;
-			if (profileData.addMacCookie !== undefined)
-				updateParams["add-mac-cookie"] = profileData.addMacCookie
-					? "yes"
-					: "no";
-			if (profileData.comment) updateParams["comment"] = profileData.comment;
-
-			if (Object.keys(updateParams).length > 0) {
+			// Update in MikroTik first if synced
+			if (profile.mikrotik_profile_id) {
+				await this.connect();
+				const mikrotikCommand =
+					MikrotikCommandGenerator.generateHotspotProfileAddObject({
+						...profile,
+						...profileData,
+					});
 				await this.connectedApi!.menu("/ip/hotspot/user/profile").update(
-					updateParams,
-					profile.mikrotik_id
+					mikrotikCommand,
+					profile.mikrotik_profile_id
 				);
 			}
 
 			// Update in database
-			const updatedConfig = {
-				bandwidth_config: {
-					...(profile.bandwidth_config as any),
-					rateLimit:
-						profileData.rateLimit ??
-						(profile.bandwidth_config as any)?.rateLimit,
-				},
-				timeout_config: {
-					...(profile.timeout_config as any),
-					sessionTimeout:
-						profileData.sessionTimeout ??
-						(profile.timeout_config as any)?.sessionTimeout,
-					idleTimeout:
-						profileData.idleTimeout ??
-						(profile.timeout_config as any)?.idleTimeout,
-					keepaliveTimeout:
-						profileData.keepaliveTimeout ??
-						(profile.timeout_config as any)?.keepaliveTimeout,
-					statusAutorefresh:
-						profileData.statusAutorefresh ??
-						(profile.timeout_config as any)?.statusAutorefresh,
-				},
-				security_config: {
-					...(profile.security_config as any),
-					transparentProxy:
-						profileData.transparentProxy ??
-						(profile.security_config as any)?.transparentProxy,
-					addressList:
-						profileData.addressList ??
-						(profile.security_config as any)?.addressList,
-				},
-				advanced_config: {
-					...(profile.advanced_config as any),
-					sharedUsers:
-						profileData.sharedUsers ??
-						(profile.advanced_config as any)?.sharedUsers,
-					addMacCookie:
-						profileData.addMacCookie ??
-						(profile.advanced_config as any)?.addMacCookie,
-					macCookieTimeout:
-						profileData.macCookieTimeout ??
-						(profile.advanced_config as any)?.macCookieTimeout,
-				},
-			};
-
 			const [updatedProfile] = await db
-				.update(session_profiles)
+				.update(hotspot_profiles)
 				.set({
-					bandwidth_config: updatedConfig.bandwidth_config,
-					timeout_config: updatedConfig.timeout_config,
-					security_config: updatedConfig.security_config,
-					advanced_config: updatedConfig.advanced_config,
-					comment: profileData.comment ?? profile.comment,
+					...profileData,
 					updated_at: new Date(),
 				})
-				.where(eq(session_profiles.id, profileId))
+				.where(eq(hotspot_profiles.id, profileId))
 				.returning();
 
 			console.log(`✅ Hotspot profile '${profile.name}' updated successfully`);
@@ -399,12 +347,9 @@ export class MikrotikHotspot extends MikrotikClient {
 		}
 	}
 
-	/**
-	 * Delete hotspot profile
-	 */
 	async deleteProfile(profileId: number): Promise<void> {
-		const profile = await db.query.session_profiles.findFirst({
-			where: (sp, { eq }) => eq(sp.id, profileId),
+		const profile = await db.query.hotspot_profiles.findFirst({
+			where: (hp, { eq }) => eq(hp.id, profileId),
 		});
 
 		if (!profile) {
@@ -413,10 +358,10 @@ export class MikrotikHotspot extends MikrotikClient {
 
 		try {
 			// Delete from MikroTik first if synced
-			if (profile.mikrotik_id) {
+			if (profile.mikrotik_profile_id) {
 				await this.connect();
 				await this.connectedApi!.menu("/ip/hotspot/user/profile").remove(
-					profile.mikrotik_id
+					profile.mikrotik_profile_id
 				);
 				console.log(
 					`✅ Hotspot profile '${profile.name}' removed from MikroTik`
@@ -425,13 +370,13 @@ export class MikrotikHotspot extends MikrotikClient {
 
 			// Soft delete in database
 			await db
-				.update(session_profiles)
+				.update(hotspot_profiles)
 				.set({
 					is_active: false,
 					synced_to_mikrotik: false,
 					updated_at: new Date(),
 				})
-				.where(eq(session_profiles.id, profileId));
+				.where(eq(hotspot_profiles.id, profileId));
 
 			console.log(
 				`✅ Hotspot profile '${profile.name}' deactivated in database`
@@ -444,18 +389,13 @@ export class MikrotikHotspot extends MikrotikClient {
 
 	// ============ USER MANAGEMENT ============
 
-	/**
-	 * Create hotspot user - Database first approach
-	 */
 	async createUser(
 		routerId: number,
-		userData: HotspotUser,
-		customerId?: number
-	): Promise<SessionUser> {
-		let createdUser: SessionUser | null = null;
+		userData: NewHotspotUser
+	): Promise<HotspotUser> {
+		let createdUser: HotspotUser | null = null;
 
 		try {
-			// 1. Validate router exists and is active
 			const router = await db.query.routers.findFirst({
 				where: (r, { eq, and }) =>
 					and(eq(r.id, routerId), eq(r.is_active, true)),
@@ -465,33 +405,10 @@ export class MikrotikHotspot extends MikrotikClient {
 				throw new Error(`Router with ID ${routerId} not found or inactive`);
 			}
 
-			// 2. Validate profile exists if specified
-			let profileId: number | undefined;
-			if (userData.profile) {
-				const profile = await db.query.session_profiles.findFirst({
-					where: (sp, { eq, and }) =>
-						and(
-							eq(sp.router_id, routerId),
-							eq(sp.name, userData.profile ?? ""),
-							eq(sp.type, "hotspot"),
-							eq(sp.is_active, true)
-						),
-				});
-
-				if (!profile) {
-					throw new Error(`Hotspot profile '${userData.profile}' not found`);
-				}
-				profileId = profile.id;
-			}
-
-			// 3. Check if username already exists for this router
-			const existingUser = await db.query.session_users.findFirst({
-				where: (su, { eq, and }) =>
-					and(
-						eq(su.router_id, routerId),
-						eq(su.name, userData.name),
-						eq(su.type, "hotspot")
-					),
+			// Check if username already exists
+			const existingUser = await db.query.hotspot_users.findFirst({
+				where: (hu, { eq, and }) =>
+					and(eq(hu.router_id, routerId), eq(hu.name, userData.name)),
 			});
 
 			if (existingUser) {
@@ -500,89 +417,56 @@ export class MikrotikHotspot extends MikrotikClient {
 				);
 			}
 
-			// 4. Prepare database record
-			const newUser: NewSessionUser = {
+			const newUser: NewHotspotUser = {
+				...userData,
 				router_id: routerId,
-				profile_id: profileId,
-				customer_id: customerId,
-				name: userData.name,
-				password: userData.password,
-				type: "hotspot",
-				network_config: {},
-				limits: {
-					limitUptime: userData.limitUptime,
-					limitBytesIn: userData.limitBytesIn,
-					limitBytesOut: userData.limitBytesOut,
-					limitBytesTotal: userData.limitBytesTotal,
-				},
-				usage_stats: {
-					bytesIn: 0,
-					bytesOut: 0,
-					sessionCount: 0,
-					lastLogin: null,
-				},
-				comment: userData.comment,
 				synced_to_mikrotik: false,
-				is_active: true,
 			};
 
-			// 5. Create in database first
 			const [dbUser] = await db
-				.insert(session_users)
+				.insert(hotspot_users)
 				.values(newUser)
 				.returning();
-
 			createdUser = dbUser;
 
 			console.log(`✅ Hotspot user '${userData.name}' created in database`);
 
-			// 6. Create in MikroTik
+			// Create in MikroTik
 			await this.connect();
-
-			const mikrotikParams: any = {
+			const mikrotikCommand = {
 				name: userData.name,
+				password: userData.password,
+				profile: userData.profile,
+				comment: userData.comment || "",
 			};
 
-			if (userData.password) mikrotikParams.password = userData.password;
-			if (userData.profile) mikrotikParams.profile = userData.profile;
-			if (userData.limitUptime)
-				mikrotikParams["limit-uptime"] = userData.limitUptime;
-			if (userData.limitBytesIn)
-				mikrotikParams["limit-bytes-in"] = userData.limitBytesIn;
-			if (userData.limitBytesOut)
-				mikrotikParams["limit-bytes-out"] = userData.limitBytesOut;
-			if (userData.limitBytesTotal)
-				mikrotikParams["limit-bytes-total"] = userData.limitBytesTotal;
-			if (userData.comment) mikrotikParams.comment = userData.comment;
-
 			const result = await this.connectedApi!.menu("/ip/hotspot/user").add(
-				mikrotikParams
+				mikrotikCommand
 			);
 
-			// 7. Update database with MikroTik ID and sync status
-			await db
-				.update(session_users)
+			// Update with MikroTik ID
+			const [updatedUser] = await db
+				.update(hotspot_users)
 				.set({
-					mikrotik_id: result.ret,
+					mikrotik_user_id: result["id"],
 					synced_to_mikrotik: true,
 					updated_at: new Date(),
 				})
-				.where(eq(session_users.id, dbUser.id));
+				.where(eq(hotspot_users.id, dbUser.id))
+				.returning();
 
 			console.log(
-				`✅ Hotspot user '${userData.name}' synced to MikroTik with ID: ${result.ret}`
+				`✅ Hotspot user '${userData.name}' synced to MikroTik with ID: ${result["id"]}`
 			);
-
-			return { ...dbUser, mikrotik_id: result.ret, synced_to_mikrotik: true };
+			return updatedUser;
 		} catch (error) {
 			console.error("❌ Error creating hotspot user:", error);
 
-			// Rollback: Delete from database if MikroTik creation failed
-			if (createdUser) {
+			if (createdUser?.id) {
 				try {
 					await db
-						.delete(session_users)
-						.where(eq(session_users.id, createdUser.id));
+						.delete(hotspot_users)
+						.where(eq(hotspot_users.id, createdUser.id));
 					console.log(
 						`🔄 Rolled back database record for user '${userData.name}'`
 					);
@@ -598,41 +482,29 @@ export class MikrotikHotspot extends MikrotikClient {
 		}
 	}
 
-	/**
-	 * Get active hotspot users
-	 */
-	async getActiveUsers(routerId: number): Promise<any[]> {
-		await this.connect();
-
-		try {
-			const activeUsers = await this.connectedApi!.menu(
-				"/ip/hotspot/active"
-			).get();
-			return activeUsers;
-		} catch (error) {
-			console.error("❌ Error getting active hotspot users:", error);
-			throw error;
-		}
-	}
-
-	/**
-	 * Get all hotspot users for a router from database
-	 */
-	async getUsers(routerId: number): Promise<SessionUser[]> {
-		return await db.query.session_users.findMany({
-			where: (su, { eq, and }) =>
-				and(
-					eq(su.router_id, routerId),
-					eq(su.type, "hotspot"),
-					eq(su.is_active, true)
-				),
-			orderBy: (su, { desc }) => [desc(su.created_at)],
+	async getUsers(routerId: number): Promise<HotspotUser[]> {
+		return await db.query.hotspot_users.findMany({
+			where: (hu, { eq, and }) =>
+				and(eq(hu.router_id, routerId), eq(hu.is_active, true)),
+			orderBy: (hu, { desc }) => [desc(hu.created_at)],
+			with: {
+				profile: true,
+				customer: true,
+			},
 		});
 	}
 
-	/**
-	 * Disconnect hotspot user
-	 */
+	async getActiveUsers(routerId: number): Promise<HotspotActiveSession[]> {
+		return await db.query.hotspot_active_sessions.findMany({
+			where: (has, { eq }) => eq(has.router_id, routerId),
+			orderBy: (has, { desc }) => [desc(has.login_time)],
+			with: {
+				hotspot_user: true,
+				customer: true,
+			},
+		});
+	}
+
 	async disconnectUser(routerId: number, username: string): Promise<void> {
 		await this.connect();
 
@@ -653,6 +525,20 @@ export class MikrotikHotspot extends MikrotikClient {
 				);
 			}
 
+			// Update database session status
+			await db
+				.update(hotspot_active_sessions)
+				.set({
+					status: "terminated",
+					updated_at: new Date(),
+				})
+				.where(
+					and(
+						eq(hotspot_active_sessions.router_id, routerId),
+						eq(hotspot_active_sessions.username, username)
+					)
+				);
+
 			console.log(
 				`✅ Disconnected ${activeSessions.length} session(s) for user '${username}'`
 			);
@@ -664,365 +550,131 @@ export class MikrotikHotspot extends MikrotikClient {
 
 	// ============ VOUCHER MANAGEMENT ============
 
-	/**
-	 * Generate random string for voucher
-	 */
-	private generateVoucherCode(config: VoucherConfig = {}): string {
-		const {
-			length = 8,
-			prefix = "",
-			suffix = "",
-			characters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", // Updated default
-		} = config;
+	async createVoucherBatch(
+		config: BulkVoucherConfig
+	): Promise<HotspotVoucherBatch> {
+		try {
+			const batchData: NewHotspotVoucherBatch = {
+				router_id: config.router_id,
+				profile: config.profile,
+				batch_name: config.batch_name,
+				length: config.length || 8,
+				start_date: config.start_date,
+				end_date: config.end_date,
+				prefix: config.prefix || "",
+				suffix: config.suffix || "",
+				username_length: config.length || 8,
+				password_length: config.length || 8,
+				charset: config.characters || "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+				password_mode: config.passwordMode || "same_as_username",
+				generation_mode: config.generation_mode || "random",
+				count: config.total_generated,
+				total_generated: 0,
+				comment: config.comment,
+				created_by: config.created_by,
+			};
 
-		let result = prefix;
-		for (let i = 0; i < length; i++) {
-			result += characters.charAt(
-				Math.floor(Math.random() * characters.length)
+			const [batch] = await db
+				.insert(voucher_batches)
+				.values(batchData)
+				.returning();
+
+			console.log(
+				`✅ Voucher batch '${config.batch_name}' created with ID: ${batch.id}`
 			);
-		}
-		result += suffix;
-
-		return result;
-	}
-
-	/**
-	 * Generate password based on mode
-	 */
-	private generatePassword(
-		username: string,
-		config: VoucherConfig = {}
-	): string {
-		const { passwordMode = "same_as_username", customPassword } = config;
-
-		switch (passwordMode) {
-			case "same_as_username":
-				return username;
-			case "custom":
-				return customPassword || username; // Fallback to username if custom password not provided
-			case "random":
-			default:
-				// Generate random password with same config as username
-				return this.generateVoucherCode({
-					length: config.length,
-					prefix: "",
-					suffix: "",
-					characters: config.characters,
-				});
+			return batch;
+		} catch (error) {
+			console.error("❌ Error creating voucher batch:", error);
+			throw error;
 		}
 	}
 
-	/**
-	 * Create single voucher with custom username/password - Database first approach
-	 */
 	async createSingleVoucher(
-		voucherConfig: SingleVoucherConfig
-	): Promise<Voucher> {
-		let createdVoucher: Voucher | null = null;
+		config: SingleVoucherConfig
+	): Promise<HotspotVoucher> {
+		let createdVoucher: HotspotVoucher | null = null;
 
 		try {
-			// 1. Validate router exists and is active
-			const router = await db.query.routers.findFirst({
-				where: (r, { eq, and }) =>
-					and(eq(r.id, voucherConfig.router_id), eq(r.is_active, true)),
-			});
-
-			if (!router) {
-				throw new Error(
-					`Router with ID ${voucherConfig.router_id} not found or inactive`
-				);
-			}
-
-			// 2. Validate profile exists if specified
-			let profile: SessionProfile | undefined;
-			if (voucherConfig.profile_id) {
-				profile = await db.query.session_profiles.findFirst({
-					where: (sp, { eq, and }) =>
-						and(
-							eq(sp.id, voucherConfig.profile_id!),
-							eq(sp.router_id, voucherConfig.router_id),
-							eq(sp.type, "hotspot"),
-							eq(sp.is_active, true)
-						),
-				});
-
-				if (!profile) {
-					throw new Error(
-						`Hotspot profile with ID ${voucherConfig.profile_id} not found`
-					);
-				}
-			}
-
-			// 3. Check if username already exists for this router
+			// Check if username already exists
 			const existingVoucher = await db.query.vouchers.findFirst({
 				where: (v, { eq, and }) =>
 					and(
-						eq(v.router_id, voucherConfig.router_id),
-						eq((v.general as any).name, voucherConfig.username)
+						eq(v.router_id, config.router_id),
+						eq(v.username, config.username)
 					),
 			});
 
 			if (existingVoucher) {
 				throw new Error(
-					`Voucher with username '${voucherConfig.username}' already exists on this router`
+					`Voucher with username '${config.username}' already exists`
 				);
 			}
 
-			// 4. Determine password
-			const password = voucherConfig.password || voucherConfig.username; // Use same_as_username if no password provided
-
-			// 5. Prepare database record
-			const newVoucher: NewVoucher = {
-				router_id: voucherConfig.router_id,
-				session_profiles_id: voucherConfig.profile_id || null,
-				general: {
-					name: voucherConfig.username,
-					password: password,
-				},
-				comment:
-					voucherConfig.comment ||
-					`Custom voucher created at ${new Date().toISOString()}`,
-				limits: profile
-					? {
-							limit_uptime: (profile.timeout_config as any)?.sessionTimeout,
-							limit_bytes_total: (profile.bandwidth_config as any)?.dataLimit,
-					  }
-					: {},
-				statistics: {
-					used_count: 0,
-					used_bytes_in: 0,
-					used_bytes_out: 0,
-					last_used: null,
-				},
-				status: "unused",
-				created_by: voucherConfig.created_by,
+			const voucherData: NewHotspotVoucher = {
+				router_id: config.router_id,
+				profile: config.profile,
+				server: "all", // Default server
+				username: config.username,
+				password: config.password || config.username,
+				validity_hours: config.validity_hours,
+				start_at: config.start_at,
+				end_at: config.end_at,
+				uptime_limit: config.uptime_limit,
+				bytes_in_limit: config.bytes_in_limit,
+				bytes_out_limit: config.bytes_out_limit,
+				rate_limit: config.rate_limit,
+				mac_address: config.mac_address,
+				comment: config.comment,
+				created_by: config.created_by,
+				voucher_status: "unused",
 				synced_to_mikrotik: false,
 			};
 
-			// 6. Create in database first
 			const [dbVoucher] = await db
 				.insert(vouchers)
-				.values(newVoucher)
+				.values(voucherData)
 				.returning();
-
 			createdVoucher = dbVoucher;
 
-			console.log(
-				`✅ Single voucher '${voucherConfig.username}' created in database`
-			);
+			console.log(`✅ Voucher '${config.username}' created in database`);
 
-			// 7. Create in MikroTik
+			// Create in MikroTik as hotspot user
 			await this.connect();
-
-			const mikrotikParams: any = {
-				name: voucherConfig.username,
-				password: password,
-				comment:
-					voucherConfig.comment ||
-					`Custom voucher - ${new Date().toISOString()}`,
-			};
-
-			// Add profile if specified
-			if (profile) {
-				mikrotikParams.profile = profile.name;
-			}
-
-			const result = await this.connectedApi!.menu("/ip/hotspot/user").add(
-				mikrotikParams
-			);
-
-			// 8. Update database with MikroTik ID and sync status
-			await db
-				.update(vouchers)
-				.set({
-					mikrotik_id: result.ret,
-					synced_to_mikrotik: true,
-					updated_at: new Date(),
-				})
-				.where(eq(vouchers.id, dbVoucher.id));
-
-			console.log(
-				`✅ Single voucher '${voucherConfig.username}' synced to MikroTik with ID: ${result.ret}`
-			);
-
-			return {
-				...dbVoucher,
-				mikrotik_id: result.ret,
-				synced_to_mikrotik: true,
-			};
-		} catch (error) {
-			console.error("❌ Error creating single voucher:", error);
-
-			// Rollback: Delete from database if MikroTik creation failed
-			if (createdVoucher) {
-				try {
-					await db.delete(vouchers).where(eq(vouchers.id, createdVoucher.id));
-					console.log(
-						`🔄 Rolled back database record for voucher '${voucherConfig.username}'`
-					);
-				} catch (rollbackError) {
-					console.error(
-						"❌ Failed to rollback database record:",
-						rollbackError
-					);
-				}
-			}
-
-			throw error;
-		}
-	}
-
-	/**
-	 * Check if voucher code is unique
-	 */
-	private async isVoucherCodeUnique(
-		routerId: number,
-		code: string
-	): Promise<boolean> {
-		const existing = await db.query.vouchers.findFirst({
-			where: (v, { eq, and }) =>
-				and(eq(v.router_id, routerId), eq(v.general as any, { name: code })),
-		});
-		return !existing;
-	}
-
-	/**
-	 * Create single voucher - Database first approach
-	 */
-	async createVoucher(
-		routerId: number,
-		profileName: string,
-		voucherConfig: Partial<VoucherConfig> = {},
-		customCode?: string,
-		comment?: string,
-		createdBy?: number
-	): Promise<Voucher> {
-		let createdVoucher: Voucher | null = null;
-
-		try {
-			// 1. Validate router and profile
-			const router = await db.query.routers.findFirst({
-				where: (r, { eq, and }) =>
-					and(eq(r.id, routerId), eq(r.is_active, true)),
-			});
-
-			if (!router) {
-				throw new Error(`Router with ID ${routerId} not found or inactive`);
-			}
-
-			const profile = await db.query.session_profiles.findFirst({
-				where: (sp, { eq, and }) =>
-					and(
-						eq(sp.router_id, routerId),
-						eq(sp.name, profileName),
-						eq(sp.type, "hotspot"),
-						eq(sp.is_active, true)
-					),
-			});
-
-			if (!profile) {
-				throw new Error(`Hotspot profile '${profileName}' not found`);
-			}
-
-			// 2. Generate unique voucher code
-			let voucherCode = customCode;
-			if (!voucherCode) {
-				let attempts = 0;
-				do {
-					voucherCode = this.generateVoucherCode(voucherConfig);
-					attempts++;
-				} while (
-					!(await this.isVoucherCodeUnique(routerId, voucherCode)) &&
-					attempts < 100
-				);
-
-				if (attempts >= 100) {
-					throw new Error(
-						"Failed to generate unique voucher code after 100 attempts"
-					);
-				}
-			} else {
-				// Check if custom code is unique
-				if (!(await this.isVoucherCodeUnique(routerId, voucherCode))) {
-					throw new Error(`Voucher code '${voucherCode}' already exists`);
-				}
-			}
-
-			// 3. Prepare database record
-			const newVoucher: NewVoucher = {
-				router_id: routerId,
-				session_profiles_id: profile.id,
-				general: {
-					name: voucherCode,
-					password: voucherCode, // Use same as username for hotspot vouchers
-				},
-				comment,
-				limits: {
-					limit_uptime: (profile.timeout_config as any)?.sessionTimeout,
-					limit_bytes_total: (profile.bandwidth_config as any)?.dataLimit,
-				},
-				statistics: {
-					used_count: 0,
-					used_bytes_in: 0,
-					used_bytes_out: 0,
-					last_used: null,
-				},
-				status: "unused",
-				created_by: createdBy,
-				synced_to_mikrotik: false,
-			};
-
-			// 4. Create in database first
-			const [dbVoucher] = await db
-				.insert(vouchers)
-				.values(newVoucher)
-				.returning();
-
-			createdVoucher = dbVoucher;
-
-			console.log(`✅ Voucher '${voucherCode}' created in database`);
-
-			// 5. Create in MikroTik as hotspot user
-			await this.connect();
-
-			const mikrotikParams: any = {
-				name: voucherCode,
-				password: voucherCode,
-				profile: profileName,
-				comment: comment || `Voucher created at ${new Date().toISOString()}`,
+			const mikrotikCommand = {
+				name: config.username,
+				password: config.password || config.username,
+				profile: config.profile,
+				comment: config.comment || "",
 			};
 
 			const result = await this.connectedApi!.menu("/ip/hotspot/user").add(
-				mikrotikParams
+				mikrotikCommand
 			);
 
-			// 6. Update database with MikroTik ID and sync status
-			await db
+			// Update with MikroTik ID
+			const [updatedVoucher] = await db
 				.update(vouchers)
 				.set({
-					mikrotik_id: result.ret,
+					mikrotik_user_id: result["id"],
 					synced_to_mikrotik: true,
 					updated_at: new Date(),
 				})
-				.where(eq(vouchers.id, dbVoucher.id));
+				.where(eq(vouchers.id, dbVoucher.id))
+				.returning();
 
 			console.log(
-				`✅ Voucher '${voucherCode}' synced to MikroTik with ID: ${result.ret}`
+				`✅ Voucher '${config.username}' synced to MikroTik with ID: ${result["id"]}`
 			);
-
-			return {
-				...dbVoucher,
-				mikrotik_id: result.ret,
-				synced_to_mikrotik: true,
-			};
+			return updatedVoucher;
 		} catch (error) {
 			console.error("❌ Error creating voucher:", error);
 
-			// Rollback: Delete from database if MikroTik creation failed
-			if (createdVoucher) {
+			if (createdVoucher?.id) {
 				try {
 					await db.delete(vouchers).where(eq(vouchers.id, createdVoucher.id));
-					console.log(`🔄 Rolled back database record for voucher`);
+					console.log(
+						`🔄 Rolled back database record for voucher '${config.username}'`
+					);
 				} catch (rollbackError) {
 					console.error(
 						"❌ Failed to rollback database record:",
@@ -1035,312 +687,185 @@ export class MikrotikHotspot extends MikrotikClient {
 		}
 	}
 
-	/**
-	 * Create bulk vouchers - Database first approach
-	 */
-	async createBulkVouchers(bulkConfig: BulkVoucherConfig): Promise<{
-		batch: VoucherBatch;
-		vouchers?: Voucher[];
-		failed: Array<{ code: string; error: string }>;
-	}> {
-		let createdBatch: VoucherBatch | null = null;
-		const createdVouchers: Voucher[] = [];
-		const failed: Array<{ code: string; error: string }> = [];
+	async getVouchers(
+		routerId: number,
+		batchId?: number
+	): Promise<HotspotVoucher[]> {
+		const whereClause = batchId
+			? and(eq(vouchers.router_id, routerId), eq(vouchers.batch_id, batchId))
+			: eq(vouchers.router_id, routerId);
 
-		try {
-			// 1. Validate router exists and is active
-			const router = await db.query.routers.findFirst({
-				where: (r, { eq, and }) =>
-					and(eq(r.id, bulkConfig.router_id), eq(r.is_active, true)),
-			});
-
-			if (!router) {
-				throw new Error(
-					`Router with ID ${bulkConfig.router_id} not found or inactive`
-				);
-			}
-
-			// 2. Validate profile exists if specified (profile is now optional)
-			let profile: SessionProfile | undefined;
-			if (bulkConfig.profile_id) {
-				profile = await db.query.session_profiles.findFirst({
-					where: (sp, { eq, and }) =>
-						and(
-							eq(sp.id, bulkConfig.profile_id!),
-							eq(sp.router_id, bulkConfig.router_id),
-							eq(sp.type, "hotspot"),
-							eq(sp.is_active, true)
-						),
-				});
-
-				if (!profile) {
-					throw new Error(
-						`Hotspot profile with ID ${bulkConfig.profile_id} not found`
-					);
-				}
-			}
-
-			// 3. Create batch record first
-			const newBatch: NewVoucherBatch = {
-				router_id: bulkConfig.router_id,
-				profile_id: bulkConfig.profile_id || null, // Allow null for optional profile
-				batch_name: bulkConfig.batch_name,
-				generation_config: {
-					length: bulkConfig.length || 8,
-					prefix: bulkConfig.prefix || "",
-					suffix: bulkConfig.suffix || "",
-					characters:
-						bulkConfig.characters ||
-						"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
-					passwordMode: bulkConfig.passwordMode || "same_as_username",
-					generation_mode: bulkConfig.generation_mode || "random",
-					count: bulkConfig.total_generated, // Map total_generated to count for storage
-				},
-				total_generated: 0, // Will be updated after generation
-				comment: bulkConfig.comment,
-				created_by: bulkConfig.created_by,
-				is_active: true,
-			};
-
-			const [dbBatch] = await db
-				.insert(voucher_batches)
-				.values(newBatch)
-				.returning();
-
-			createdBatch = dbBatch;
-			console.log(
-				`✅ Voucher batch '${bulkConfig.batch_name}' created in database`
-			);
-
-			// 4. Connect to MikroTik
-			await this.connect();
-
-			// 5. Generate and create vouchers
-			for (let i = 0; i < bulkConfig.total_generated; i++) {
-				try {
-					// Generate unique username based on generation mode
-					let voucherCode: string;
-					let attempts = 0;
-
-					if (bulkConfig.generation_mode === "sequential") {
-						// Sequential generation with prefix + number
-						const basePrefix = bulkConfig.prefix || "VOUCHER";
-						const sequenceNumber = (i + 1).toString().padStart(4, "0"); // 0001, 0002, etc.
-						voucherCode = `${basePrefix}${sequenceNumber}`;
-
-						// Check if it's unique
-						if (
-							!(await this.isVoucherCodeUnique(
-								bulkConfig.router_id,
-								voucherCode
-							))
-						) {
-							failed.push({
-								code: voucherCode,
-								error: "Sequential voucher code already exists",
-							});
-							continue;
-						}
-					} else {
-						// Random generation (default)
-						do {
-							voucherCode = this.generateVoucherCode({
-								length: bulkConfig.length,
-								prefix: bulkConfig.prefix,
-								suffix: bulkConfig.suffix,
-								characters: bulkConfig.characters,
-							});
-							attempts++;
-						} while (
-							!(await this.isVoucherCodeUnique(
-								bulkConfig.router_id,
-								voucherCode
-							)) &&
-							attempts < 10
-						);
-
-						if (attempts >= 10) {
-							failed.push({
-								code: `attempt-${i}`,
-								error: "Failed to generate unique code after 10 attempts",
-							});
-							continue;
-						}
-					}
-
-					// Generate password based on mode
-					const password = this.generatePassword(voucherCode, {
-						length: bulkConfig.length,
-						characters: bulkConfig.characters,
-						passwordMode: bulkConfig.passwordMode,
-						customPassword: bulkConfig.customPassword,
-					});
-
-					// Create voucher in database
-					const newVoucher: NewVoucher = {
-						router_id: bulkConfig.router_id,
-						batch_id: dbBatch.id,
-						session_profiles_id: bulkConfig.profile_id || null, // Allow null
-						general: {
-							name: voucherCode,
-							password: password,
-						},
-						comment: `Batch: ${bulkConfig.batch_name}`,
-						limits: profile
-							? {
-									limit_uptime: (profile.timeout_config as any)?.sessionTimeout,
-									limit_bytes_total: (profile.bandwidth_config as any)
-										?.dataLimit,
-							  }
-							: {}, // Empty limits if no profile
-						statistics: {
-							used_count: 0,
-							used_bytes_in: 0,
-							used_bytes_out: 0,
-							last_used: null,
-						},
-						status: "unused",
-						created_by: bulkConfig.created_by,
-						synced_to_mikrotik: false,
-					};
-
-					const [dbVoucher] = await db
-						.insert(vouchers)
-						.values(newVoucher)
-						.returning();
-
-					// Create in MikroTik
-					try {
-						const mikrotikParams: any = {
-							name: voucherCode,
-							password: password,
-							comment: `Batch: ${
-								bulkConfig.batch_name
-							} - ${new Date().toISOString()}`,
-						};
-
-						// Add profile if specified
-						if (profile) {
-							mikrotikParams.profile = profile.name;
-						}
-
-						const result = await this.connectedApi!.menu(
-							"/ip/hotspot/user"
-						).add(mikrotikParams);
-
-						// Update with MikroTik ID
-						await db
-							.update(vouchers)
-							.set({
-								mikrotik_id: result.ret,
-								synced_to_mikrotik: true,
-								updated_at: new Date(),
-							})
-							.where(eq(vouchers.id, dbVoucher.id));
-
-						createdVouchers.push({
-							...dbVoucher,
-							mikrotik_id: result.ret,
-							synced_to_mikrotik: true,
-						});
-
-						console.log(
-							`✅ Voucher ${i + 1}/${
-								bulkConfig.total_generated
-							} created: ${voucherCode}`
-						);
-					} catch (mikrotikError: any) {
-						console.error(
-							`❌ Failed to create voucher '${voucherCode}' in MikroTik:`,
-							mikrotikError
-						);
-
-						// Delete from database since MikroTik creation failed
-						await db.delete(vouchers).where(eq(vouchers.id, dbVoucher.id));
-						failed.push({
-							code: voucherCode,
-							error: `MikroTik error: ${
-								mikrotikError.message || mikrotikError
-							}`,
-						});
-					}
-				} catch (error: any) {
-					console.error(`❌ Failed to create voucher ${i + 1}:`, error);
-					failed.push({
-						code: `voucher-${i + 1}`,
-						error: error.message || error.toString(),
-					});
-				}
-			}
-
-			// 6. Update batch with total generated
-			const finalBatch = await db
-				.update(voucher_batches)
-				.set({
-					total_generated: createdVouchers.length,
-					updated_at: new Date(),
-				})
-				.where(eq(voucher_batches.id, dbBatch.id))
-				.returning();
-
-			console.log(
-				`✅ Bulk voucher creation completed: ${createdVouchers.length} created, ${failed.length} failed`
-			);
-
-			return {
-				batch: finalBatch[0],
-				vouchers: createdVouchers,
-				failed,
-			};
-		} catch (error) {
-			console.error("❌ Error creating bulk vouchers:", error);
-
-			// Rollback: Delete batch and any created vouchers if critical error
-			if (createdBatch) {
-				try {
-					// Delete vouchers first (foreign key constraint)
-					if (createdVouchers.length > 0) {
-						await db
-							.delete(vouchers)
-							.where(eq(vouchers.batch_id, createdBatch.id));
-					}
-
-					// Delete batch
-					await db
-						.delete(voucher_batches)
-						.where(eq(voucher_batches.id, createdBatch.id));
-
-					console.log(
-						`🔄 Rolled back batch '${bulkConfig.batch_name}' and ${createdVouchers.length} vouchers`
-					);
-				} catch (rollbackError) {
-					console.error("❌ Failed to rollback batch creation:", rollbackError);
-				}
-			}
-
-			throw error;
-		}
-	}
-
-	/**
-	 * Get active vouchers (unused vouchers)
-	 */
-	async getActiveVouchers(routerId: number, limit = 50): Promise<Voucher[]> {
 		return await db.query.vouchers.findMany({
-			where: (v, { eq, and }) =>
-				and(eq(v.router_id, routerId), eq(v.status, "unused")),
+			where: whereClause,
 			orderBy: (v, { desc }) => [desc(v.created_at)],
-			limit,
 			with: {
-				session_profiles: true,
 				batch: true,
+				profile: true,
 			},
 		});
 	}
 
-	/**
-	 * Get voucher usage statistics
-	 */
+	async getVoucherBatches(routerId: number): Promise<HotspotVoucherBatch[]> {
+		return await db.query.voucher_batches.findMany({
+			where: (vb, { eq }) => eq(vb.router_id, routerId),
+			orderBy: (vb, { desc }) => [desc(vb.created_at)],
+			with: {
+				profile: true,
+			},
+		});
+	}
+
+	async deleteVoucherBatch(
+		batchId: number,
+		forceDelete: boolean = false
+	): Promise<void> {
+		const batch = await db.query.voucher_batches.findFirst({
+			where: (vb, { eq }) => eq(vb.id, batchId),
+		});
+
+		if (!batch) {
+			throw new Error(`Voucher batch with ID ${batchId} not found`);
+		}
+
+		try {
+			// Get all vouchers in this batch
+			const batchVouchers = await db.query.vouchers.findMany({
+				where: (v, { eq }) => eq(v.batch_id, batchId),
+			});
+
+			// Delete vouchers from MikroTik
+			await this.connect();
+			for (const voucher of batchVouchers) {
+				if (voucher.mikrotik_user_id) {
+					try {
+						await this.connectedApi!.menu("/ip/hotspot/user").remove(
+							voucher.mikrotik_user_id
+						);
+					} catch (error) {
+						console.warn(
+							`⚠️ Could not remove voucher ${voucher.username} from MikroTik:`,
+							error
+						);
+					}
+				}
+			}
+
+			// Delete vouchers from database
+			await db.delete(vouchers).where(eq(vouchers.batch_id, batchId));
+
+			// Delete batch from database
+			await db.delete(voucher_batches).where(eq(voucher_batches.id, batchId));
+
+			console.log(
+				`✅ Voucher batch '${batch.batch_name}' and ${batchVouchers.length} vouchers deleted`
+			);
+		} catch (error) {
+			console.error("❌ Error deleting voucher batch:", error);
+			throw error;
+		}
+	}
+
+	// ============ SESSION TRACKING ============
+
+	async syncActiveSessions(routerId: number): Promise<void> {
+		try {
+			await this.connect();
+
+			// Get active sessions from MikroTik
+			const mikrotikSessions = await this.connectedApi!.menu(
+				"/ip/hotspot/active"
+			).get();
+
+			// Get current database sessions
+			const dbSessions = await db.query.hotspot_active_sessions.findMany({
+				where: (has, { eq }) => eq(has.router_id, routerId),
+			});
+
+			// Create map for quick lookup
+			const dbSessionMap = new Map(
+				dbSessions.map((session) => [session.session_id, session])
+			);
+
+			// Update/Insert sessions from MikroTik
+			for (const mikrotikSession of mikrotikSessions) {
+				const sessionData: NewHotspotActiveSession = {
+					router_id: routerId,
+					session_id: mikrotikSession[".id"],
+					username: mikrotikSession.user,
+					status: "active",
+					address: mikrotikSession.address,
+					mac_address: mikrotikSession["mac-address"],
+					uptime: mikrotikSession.uptime,
+					server: mikrotikSession.server,
+					login_time: new Date(), // You might want to parse this from uptime
+					last_update: new Date(),
+					bytes_in: parseInt(mikrotikSession["bytes-in"]) || 0,
+					bytes_out: parseInt(mikrotikSession["bytes-out"]) || 0,
+					packets_in: parseInt(mikrotikSession["packets-in"]) || 0,
+					packets_out: parseInt(mikrotikSession["packets-out"]) || 0,
+				};
+
+				const existingSession = dbSessionMap.get(mikrotikSession[".id"]);
+
+				if (existingSession) {
+					// Update existing session
+					await db
+						.update(hotspot_active_sessions)
+						.set({
+							...sessionData,
+							updated_at: new Date(),
+						})
+						.where(eq(hotspot_active_sessions.id, existingSession.id));
+				} else {
+					// Insert new session
+					await db.insert(hotspot_active_sessions).values(sessionData);
+				}
+
+				dbSessionMap.delete(mikrotikSession[".id"]);
+			}
+
+			// Mark remaining sessions as terminated
+			for (const [sessionId, session] of dbSessionMap) {
+				await db
+					.update(hotspot_active_sessions)
+					.set({
+						status: "terminated",
+						updated_at: new Date(),
+					})
+					.where(eq(hotspot_active_sessions.id, session.id));
+			}
+
+			console.log(
+				`✅ Synced ${mikrotikSessions.length} active sessions for router ${routerId}`
+			);
+		} catch (error) {
+			console.error("❌ Error syncing active sessions:", error);
+			throw error;
+		}
+	}
+
+	// ============ STATISTICS & MONITORING ============
+
+	async getHotspotStatus(routerId: number): Promise<any> {
+		await this.connect();
+
+		try {
+			const [hotspotServers, activeUsers] = await Promise.all([
+				this.connectedApi!.menu("/ip/hotspot").get(),
+				this.getActiveUsers(routerId),
+			]);
+
+			return {
+				servers: hotspotServers,
+				activeUsers: activeUsers.length,
+				activeUserDetails: activeUsers,
+			};
+		} catch (error) {
+			console.error("❌ Error getting hotspot status:", error);
+			throw error;
+		}
+	}
+
 	async getVoucherStats(routerId: number): Promise<{
 		total: number;
 		unused: number;
@@ -1349,12 +874,12 @@ export class MikrotikHotspot extends MikrotikClient {
 	}> {
 		const stats = await db
 			.select({
-				status: vouchers.status,
+				status: vouchers.voucher_status,
 				count: count(),
 			})
 			.from(vouchers)
 			.where(eq(vouchers.router_id, routerId))
-			.groupBy(vouchers.status);
+			.groupBy(vouchers.voucher_status);
 
 		const result = {
 			total: 0,
@@ -1381,282 +906,6 @@ export class MikrotikHotspot extends MikrotikClient {
 		return result;
 	}
 
-	/**
-	 * Get voucher batches
-	 */
-	async getVoucherBatches(routerId: number): Promise<VoucherBatch[]> {
-		return await db
-			.select({
-				id: voucher_batches.id,
-				router_id: voucher_batches.router_id,
-				profile_id: voucher_batches.profile_id,
-				batch_name: voucher_batches.batch_name,
-				generation_config: voucher_batches.generation_config,
-				total_generated: voucher_batches.total_generated,
-				comment: voucher_batches.comment,
-				status: voucher_batches.status,
-				is_active: voucher_batches.is_active,
-				created_at: voucher_batches.created_at,
-				updated_at: voucher_batches.updated_at,
-				created_by: voucher_batches.created_by,
-				profile_name: session_profiles.name, // from LEFT JOIN
-			})
-			.from(voucher_batches)
-			.leftJoin(
-				session_profiles,
-				eq(voucher_batches.profile_id, session_profiles.id)
-			)
-			.where(eq(voucher_batches.router_id, routerId))
-			.orderBy(desc(voucher_batches.created_at));
-	}
-
-	/**
-	 * Delete voucher - Remove from both MikroTik and database
-	 */
-	async deleteVoucher(voucherId: number): Promise<void> {
-		const voucher = await db.query.vouchers.findFirst({
-			where: (v, { eq }) => eq(v.id, voucherId),
-		});
-
-		if (!voucher) {
-			throw new Error(`Voucher with ID ${voucherId} not found`);
-		}
-
-		try {
-			// Delete from MikroTik first if synced
-			if (voucher.mikrotik_id) {
-				await this.connect();
-				await this.connectedApi!.menu("/ip/hotspot/user").remove(
-					voucher.mikrotik_id
-				);
-				console.log(`✅ Voucher removed from MikroTik`);
-			}
-
-			// Delete from database
-			await db.delete(vouchers).where(eq(vouchers.id, voucherId));
-
-			console.log(`✅ Voucher deleted from database`);
-		} catch (error) {
-			console.error("❌ Error deleting voucher:", error);
-			throw error;
-		}
-	}
-
-	/**
-	 * Mark voucher as used (when user authenticates)
-	 */
-	async markVoucherAsUsed(
-		routerId: number,
-		voucherCode: string,
-		usageStats?: {
-			bytesIn?: number;
-			bytesOut?: number;
-			sessionTime?: number;
-		}
-	): Promise<void> {
-		const voucher = await db.query.vouchers.findFirst({
-			where: (v, { eq, and }) =>
-				and(
-					eq(v.router_id, routerId),
-					eq((v.general as any).name, voucherCode)
-				),
-		});
-
-		if (!voucher) {
-			throw new Error(`Voucher '${voucherCode}' not found`);
-		}
-
-		const currentStats = (voucher.statistics as any) || {};
-
-		await db
-			.update(vouchers)
-			.set({
-				status: "used",
-				statistics: {
-					...currentStats,
-					used_count: (currentStats.used_count || 0) + 1,
-					used_bytes_in:
-						(currentStats.used_bytes_in || 0) + (usageStats?.bytesIn || 0),
-					used_bytes_out:
-						(currentStats.used_bytes_out || 0) + (usageStats?.bytesOut || 0),
-					last_used: new Date(),
-					session_time: usageStats?.sessionTime,
-				},
-				updated_at: new Date(),
-			})
-			.where(eq(vouchers.id, voucher.id));
-
-		console.log(`✅ Voucher '${voucherCode}' marked as used`);
-	}
-
-	/**
-	 * Sync vouchers from MikroTik to database
-	 */
-	async syncVouchersFromMikrotik(routerId: number): Promise<{
-		synced: number;
-		created: number;
-		updated: number;
-	}> {
-		await this.connect();
-
-		try {
-			// Get all hotspot users from MikroTik
-			const mikrotikUsers = await this.connectedApi!.menu(
-				"/ip/hotspot/user"
-			).get();
-
-			let synced = 0,
-				created = 0,
-				updated = 0;
-
-			for (const mikrotikUser of mikrotikUsers) {
-				try {
-					// Check if this user exists in our vouchers table
-					const existingVoucher = await db.query.vouchers.findFirst({
-						where: (v, { eq, and }) =>
-							and(
-								eq(v.router_id, routerId),
-								eq((v.general as any).name, mikrotikUser.name)
-							),
-					});
-
-					if (existingVoucher) {
-						// Update existing voucher
-						await db
-							.update(vouchers)
-							.set({
-								mikrotik_id: mikrotikUser[".id"],
-								synced_to_mikrotik: true,
-								updated_at: new Date(),
-							})
-							.where(eq(vouchers.id, existingVoucher.id));
-						updated++;
-					} else {
-						// This might be a voucher created directly in MikroTik
-						// We can optionally create it in database if it follows voucher pattern
-						if (
-							mikrotikUser.comment?.includes("Voucher") ||
-							mikrotikUser.comment?.includes("Batch")
-						) {
-							const newVoucher: NewVoucher = {
-								router_id: routerId,
-								general: {
-									name: mikrotikUser.name,
-									password: mikrotikUser.password || mikrotikUser.name,
-								},
-								comment: mikrotikUser.comment || "Synced from MikroTik",
-								limits: {},
-								statistics: {
-									used_count: 0,
-									used_bytes_in: 0,
-									used_bytes_out: 0,
-									last_used: null,
-								},
-								status: "unused",
-								mikrotik_id: mikrotikUser[".id"],
-								synced_to_mikrotik: true,
-							};
-
-							await db.insert(vouchers).values(newVoucher);
-							created++;
-						}
-					}
-					synced++;
-				} catch (error) {
-					console.error(
-						`❌ Failed to sync voucher '${mikrotikUser.name}':`,
-						error
-					);
-				}
-			}
-
-			console.log(
-				`✅ Voucher sync completed: ${synced} processed, ${created} created, ${updated} updated`
-			);
-
-			return { synced, created, updated };
-		} catch (error) {
-			console.error("❌ Error syncing vouchers from MikroTik:", error);
-			throw error;
-		}
-	}
-
-	/**
-	 * Clean up expired vouchers
-	 */
-	async cleanupExpiredVouchers(routerId: number): Promise<{
-		cleaned: number;
-		errors: string[];
-	}> {
-		const errors: string[] = [];
-		let cleaned = 0;
-
-		try {
-			// Get expired vouchers (you can define your own expiry logic)
-			const expiredVouchers = await db.query.vouchers.findMany({
-				where: (v, { eq, and, lt }) =>
-					and(eq(v.router_id, routerId), eq(v.status, "expired")),
-			});
-
-			await this.connect();
-
-			for (const voucher of expiredVouchers) {
-				try {
-					// Remove from MikroTik if synced
-					if (voucher.mikrotik_id) {
-						await this.connectedApi!.menu("/ip/hotspot/user").remove(
-							voucher.mikrotik_id
-						);
-					}
-
-					// Delete from database
-					await db.delete(vouchers).where(eq(vouchers.id, voucher.id));
-
-					cleaned++;
-				} catch (error) {
-					errors.push(
-						`Failed to clean voucher ${
-							(voucher.general as any)?.name
-						}: ${error}`
-					);
-				}
-			}
-
-			console.log(`✅ Cleanup completed: ${cleaned} expired vouchers removed`);
-
-			return { cleaned, errors };
-		} catch (error) {
-			console.error("❌ Error cleaning up expired vouchers:", error);
-			throw error;
-		}
-	}
-
-	// ============ MONITORING & UTILITIES ============
-
-	/**
-	 * Get hotspot server status
-	 */
-	async getHotspotStatus(routerId: number): Promise<any> {
-		await this.connect();
-
-		try {
-			const hotspotServers = await this.connectedApi!.menu("/ip/hotspot").get();
-			const activeUsers = await this.getActiveUsers(routerId);
-
-			return {
-				servers: hotspotServers,
-				activeUsers: activeUsers.length,
-				activeUserDetails: activeUsers,
-			};
-		} catch (error) {
-			console.error("❌ Error getting hotspot status:", error);
-			throw error;
-		}
-	}
-
-	/**
-	 * Get hotspot statistics
-	 */
 	async getHotspotStats(routerId: number): Promise<{
 		profiles: number;
 		users: number;
@@ -1689,8 +938,4 @@ export class MikrotikHotspot extends MikrotikClient {
 	}
 }
 
-(MikrotikHotspot as typeof MikrotikClient).createFromDatabase =
-	MikrotikClient.createFromDatabase;
-
-export const createMikrotikHotspot =
-	MikrotikHotspot.createFromDatabase.bind(MikrotikHotspot);
+export const createMikrotikHotspot = MikrotikHotspot.createFromDatabase;

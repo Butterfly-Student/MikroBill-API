@@ -44,18 +44,14 @@ async function startMonitoring() {
 		});
 
 		// Monitor Hotspot Active Users
-		const hotspotMenu = client.menu("/ip hotspot active");
+		const hotspotMenu = client.menu("/ip address");
 		const hotspotStream = hotspotMenu.stream("listen", (err, data) => {
 			if (err) {
 				console.error("❌ Hotspot Stream error:", err);
 				return;
 			}
 
-			console.log("🔴 Hotspot Active Event:", {
-				timestamp: new Date().toISOString(),
-				event: "HOTSPOT_CHANGE",
-				data: data,
-			});
+			console.log("🔴 Hotspot Active Event:", data);
 		});
 
 		console.log("📡 All monitors started successfully!");

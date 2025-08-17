@@ -1,6 +1,6 @@
 
 import { db } from "@/lib/db/index";
-import { IRosOptions, RouterOSAPI, RouterOSClient } from "routeros-client";
+import { IRosOptions, RouterOSAPI, RouterOSClient } from "routeros-api";
 
 
 export interface StreamData {
@@ -30,7 +30,7 @@ export class MikrotikClient {
 	private activeStreams: Map<string, any> = new Map();
 
 	// RouterOSAPI untuk tugas-tugas tertentu
-	private routerosApi: RouterOSAPI;
+	protected routerosApi: RouterOSAPI;
 	private isRouterosApiConnected = false;
 
 	// Static properties untuk client management
@@ -67,29 +67,41 @@ export class MikrotikClient {
 		}
 	}
 
+	// Tambahkan method ini di MikrotikClient (paste-2.txt):
+
 	/**
-	 * Static method to create or get cached MikroTik client from database
+	 * Static method to set cached client (helper for subclasses)
 	 */
-	static async createFromDatabase<T extends typeof MikrotikClient>(
-		this: T,
+	static setCachedClient(routerId: number, client: MikrotikClient): void {
+		MikrotikClient.clientCache.set(routerId, {
+			client,
+			lastUsed: new Date(),
+			isConnected: true,
+		});
+	}
+
+	/**
+	 * Generic createFromDatabase that can be overridden by subclasses
+	 */
+	static async createFromDatabase<T extends MikrotikClient>(
+		this: new (config: IRosOptions) => T,
 		routerId: number,
 		overrideConfig?: Partial<IRosOptions>
-	): Promise<InstanceType<T>> {
+	): Promise<MikrotikClient> {
 		try {
 			if (!routerId || routerId <= 0) {
 				throw new Error("Invalid router ID provided");
 			}
 
-			const cachedClient = this.clientCache.get(routerId);
-			console.log("Cached Client:", cachedClient);
-
-			if (cachedClient && cachedClient.isConnected) {
-				cachedClient.lastUsed = new Date();
-				return cachedClient.client as InstanceType<T>;
+			const cachedClient = MikrotikClient.getCachedClient(routerId);
+			if (cachedClient && cachedClient instanceof this) {
+				console.log(`♻️ Using cached client for router ${routerId}`);
+				return cachedClient as T;
 			}
 
+			// Disconnect if cached client is different type
 			if (cachedClient) {
-				await this.disconnectCachedClient(routerId);
+				await MikrotikClient.disconnectCachedClient(routerId);
 			}
 
 			const router = await db.query.routers.findFirst({
@@ -119,27 +131,15 @@ export class MikrotikClient {
 				);
 			}
 
-			console.log(
-				`Creating MikroTik client for router: ${router.name} (${router.hostname})`
-			);
-
-			const client = new this(clientConfig) as InstanceType<T>;
-
+			const client = new this(clientConfig);
 			await client.connectWithTimeout(clientConfig.timeout || 30000);
 
-			this.clientCache.set(routerId, {
-				client,
-				lastUsed: new Date(),
-				isConnected: true,
-			});
+			MikrotikClient.setCachedClient(routerId, client);
 
 			return client;
 		} catch (error) {
-			console.error(
-				`Failed to create MikroTik client for router ${routerId}:`,
-				error
-			);
-			this.clientCache.delete(routerId);
+			console.error(`Failed to create client for router ${routerId}:`, error);
+			MikrotikClient.clientCache.delete(routerId);
 			throw error;
 		}
 	}
@@ -309,7 +309,7 @@ export class MikrotikClient {
 	/**
 	 * Connect client with timeout
 	 */
-	private async connectWithTimeout(timeout: number): Promise<void> {
+	public async connectWithTimeout(timeout: number): Promise<void> {
 		const connectPromise = this.connect();
 		const timeoutPromise = new Promise<never>((_, reject) => {
 			setTimeout(
@@ -351,6 +351,7 @@ export class MikrotikClient {
 		}
 	}
 
+
 	async getSystemInfo(): Promise<any> {
 		await this.connect();
 		return this.connectedApi!.menu("/system/resource").getOnly();
@@ -382,6 +383,15 @@ export class MikrotikClient {
 	async getPPPoESecrets(): Promise<any[]> {
 		await this.connect();
 		return this.connectedApi!.menu("/ppp/secret").get();
+	}
+
+	/**
+	 * Get Active pppoe connections from MikroTik
+	 */
+
+	async getActivePPPoEConnections(): Promise<any[]> {
+		await this.connectRouterosApi();
+		return this.routerosApi.write("/ppp/active/print");
 	}
 
 	/**

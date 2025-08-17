@@ -1,3 +1,4 @@
+import { timestamp } from 'drizzle-orm/pg-core';
 // ============ BASE CONFIGURATION TYPES ============
 
 import { SessionProfile } from "@/database/schema/mikrotik";
@@ -16,8 +17,8 @@ export interface BaseBandwidthConfig {
 
 // Common timeout configuration
 export interface BaseTimeoutConfig {
-	sessionTimeout?: number; // seconds
-	idleTimeout?: number; // seconds
+	sessionTimeout?: number | string; // seconds
+	idleTimeout?: number | string; // seconds
 }
 
 // Common limits configuration
@@ -27,96 +28,227 @@ export interface BaseLimitsConfig {
 	validity?: number; // days
 }
 
-// ============ PPPOE SPECIFIC TYPES ============
+// ============ PPPOE/PPP SPECIFIC TYPES (Based on /ppp profile) ============
 
 export interface PPPoENetworkConfig {
-	bridgeLearning?: boolean;
-	useIpv6?: boolean;
-	useMpls?: boolean;
-	changeTcpMss?: boolean;
-	useUpnp?: boolean;
-	addressList?: string[];
-	onUp?: string; // script
-	onDown?: string; // script
+	// Bridge settings
+	bridge?: string; // Name of the bridge interface
+	bridgeHorizon?: number; // 0..429496729
+	bridgeLearning?: "default" | "no" | "yes"; // Default: default
+	bridgePathCost?: number; // 0..429496729
+	bridgePortPriority?: number; // 0..240
+
+	// Network settings
+	addressList?: string; // Address list name
+	changeTcpMss?: "yes" | "no" | "default"; // Default: default
+	dnsServer?: string; // IP address
+	winsServer?: string; // IP address
+	localAddress?: string; // IP address or pool name
+	remoteAddress?: string; // IP address or pool name
+	remoteIpv6PrefixPool?: string; // IPv6 pool name
+	dhcpv6PdPool?: string; // DHCPv6-PD pool name
+
+	// Protocol settings
+	useIpv6?: "yes" | "no" | "default" | "require"; // Default: default
+	useMpls?: "yes" | "no" | "default" | "require"; // Default: default
+	useVjCompression?: "yes" | "no" | "default"; // Default: default
+
+	// Scripts
+	onUp?: string; // Script name
+	onDown?: string; // Script name
 }
 
 export interface PPPoEBandwidthConfig extends BaseBandwidthConfig {
-	rateLimit?: string; // "rx-rate/tx-rate"
+	rateLimit?: string; // "rx-rate[/tx-rate] [rx-burst-rate[/tx-burst-rate]...]"
 }
 
 export interface PPPoETimeoutConfig extends BaseTimeoutConfig {
-	// PPPoE specific timeouts if any
+	// PPPoE specific timeouts
 }
 
 export interface PPPoELimitsConfig extends BaseLimitsConfig {
-	useCompression?: boolean;
-	useEncryption?: boolean;
-	onlyOne?: boolean; // only one session per user
+	useCompression?: "yes" | "no" | "default"; // Default: default
+	useEncryption?: "yes" | "no" | "default" | "require"; // Default: default
+	onlyOne?: "yes" | "no" | "default"; // Default: default
 }
 
 export interface PPPoESecurityConfig {
-	useCompression?: boolean;
-	useEncryption?: boolean;
-	allowedAddress?: string[];
-	callerIdFilter?: string[];
+	useCompression?: "yes" | "no" | "default";
+	useEncryption?: "yes" | "no" | "default" | "require";
+	incomingFilter?: string; // Firewall chain name
+	outgoingFilter?: string; // Firewall chain name
+	callerId?: string; // IP address for PPTP/L2TP, MAC for PPPoE
 }
 
 export interface PPPoEAdvancedConfig {
-	serviceName?: string;
-	acName?: string;
-	interfaceList?: string;
-	maxMru?: number;
-	maxMtu?: number;
-	mrru?: number;
+	// PPP Secret specific settings
+	service?:
+		| "any"
+		| "async"
+		| "isdn"
+		| "l2tp"
+		| "pppoe"
+		| "pptp"
+		| "ovpn"
+		| "sstp";
+	routes?: string; // Route format: "dst-address gateway metric"
+	remoteIpv6Prefix?: string; // IPv6 prefix
+	comment?: string;
 }
 
-// ============ HOTSPOT SPECIFIC TYPES ============
+// ============ HOTSPOT SPECIFIC TYPES (Based on /ip hotspot user profile) ============
 
 export interface HotspotNetworkConfig {
-	addressList?: string[];
-	transparentProxy?: boolean;
-	httpProxy?: string;
-	httpsProxy?: string;
-	ftp?: boolean;
-	bypass?: boolean;
+	// Address and pool settings
+	addressList?: string; // Address list name
+	addressPool?: string | "none"; // IP pool name, "none" for none
+
+	// Proxy settings
+	transparentProxy?: boolean; // Default: true
+
+	// Advertisement settings
+	advertise?: boolean; // Default: false
+	advertiseInterval?: string; // Time intervals, e.g., "30m,10m"
+	advertiseTimeout?: "time" | "immediately" | "never" | "1m"; // "time" | "immediately" | "never", Default: "1m"
+	advertiseUrl?: string[]; // Comma-separated URLs
+	lockToMac?: boolean;
+	lockToServer?: boolean;
 }
 
 export interface HotspotBandwidthConfig extends BaseBandwidthConfig {
-	sharedUsers?: number;
-	rateLimit?: string;
+	sharedUsers?: number; // Default: 1
+	rateLimit?: string; // Rate limit format for simple queue
 }
 
 export interface HotspotTimeoutConfig extends BaseTimeoutConfig {
-	keepaliveTimeout?: number;
-	statusAutorefresh?: number;
-	macCookieTimeout?: number;
+	keepaliveTimeout?: string; // "time" | "none"
+	idleTimeout?: string | number; // "time" | "none", Default: "none"
+	macCookieTimeout?: string; // Default: "3d"
+	statusAutorefresh?: string; // "time" | "none", Default: "none"
 }
 
 export interface HotspotLimitsConfig extends BaseLimitsConfig {
-	macCookieTimeout?: number;
+	macCookieTimeout?: string;
 	sharedUsers?: number;
 }
 
 export interface HotspotSecurityConfig {
-	addressList?: string[];
-	transparentProxy?: boolean;
-	bypassProxy?: boolean;
-	advertise?: boolean;
-	advertiseUrl?: string;
-	advertiseInterval?: number;
+	// MAC cookie settings
+	addMacCookie?: boolean; // Default: true
+	macCookieTimeout?: string; // Default: "3d"
+
+	// Firewall settings
+	incomingFilter?: string; // Firewall chain name
+	outgoingFilter?: string; // Firewall chain name
+	incomingPacketMark?: string; // Packet mark for incoming packets
+	outgoingPacketMark?: string; // Packet mark for outgoing packets
 }
 
 export interface HotspotAdvancedConfig {
-	sharedUsers?: number;
+	// Session settings
+	sharedUsers?: number; // Default: 1
+	sessionTimeout?: string; // Time, Default: "0s"
+
+	// Status page settings
+	openStatusPage?: "always" | "http-login"; // Default: "always"
+	statusAutorefresh?: string; // "time" | "none"
+
+	// Cookie settings
 	addMacCookie?: boolean;
-	macCookieTimeout?: number;
-	keepaliveTimeout?: number;
-	statusAutorefresh?: number;
-	openStatusPage?: string;
-	httpPap?: boolean;
-	httpChap?: boolean;
-	httpsRedirect?: boolean;
-	split?: boolean;
+	macCookieTimeout?: string;
+
+	// Scripts
+	onLogin?: string; // Script name
+	onLogout?: string; // Script name
+
+	//custom
+	ExpiredMode?: "disable" | "remove"; // What to do when expired
+	autoExpiry?: boolean; // Auto handle expiry
+}
+
+// ============ HOTSPOT USER SPECIFIC TYPES ============
+
+export interface HotspotUserConfig {
+	// Basic user info
+	name: string; // Username
+	password?: string;
+	email?: string;
+	comment?: string;
+
+	// Network settings
+	address?: string; // IP address, Default: "0.0.0.0"
+	macAddress?: string; // MAC address, Default: "00:00:00:00:00:00"
+
+	// Limits
+	limitBytesIn?: number; // Default: 0
+	limitBytesOut?: number; // Default: 0
+	limitBytesTotal?: number; // Default: 0
+	limitUptime?: string; // Time format, Default: "0"
+
+	// Server and profile
+	server?: string; // "string" | "all", Default: "all"
+	profile?: string; // Default: "default"
+	routes?: string; // Route format
+}
+
+export interface HotspotUserNetworkConfig {
+	address?: string; // IP address, Default: "0.0.0.0"
+	macAddress?: string; // MAC address, Default: "00:00:00:00:00:00"
+}
+
+export interface HotspotUserUsagesConfig {
+	bytesIn?: number; // Default: 0
+	bytesOut?: number;
+	packetsIn?: number; // Default: 0
+	packetsOut?: number;
+	uptime?: string;
+}
+
+export interface HotspotUseerLimitsConfig {
+	limitBytesIn?: number; // Default: 0
+	limitBytesOut?: number; // Default: 0
+	limitBytesTotal?: number; // Default: 0
+	limitUptime?: string; // Time format, Default: "0"
+}
+
+export interface HotspotUserAdvancedConfig {
+	// Server and profile
+	server?: string | "all"; // "string" | "all", Default: "all"
+	profile?: string | "default"; // Default: "default"
+	routes?: string; // Route format
+}
+
+// ============ PPP SECRET USER SPECIFIC TYPES ============
+
+export interface PPPSecretUserConfig {
+	// Basic user info
+	name: string;
+	password?: string;
+	comment?: string;
+	disabled?: boolean; // Default: false
+
+	// Network settings
+	localAddress?: string; // IP address
+	remoteAddress?: string; // IP address
+	callerId?: string; // IP for PPTP/L2TP, MAC for PPPoE
+
+	// Limits
+	limitBytesIn?: number; // Default: 0
+	limitBytesOut?: number; // Default: 0
+
+	// Service and profile
+	service?:
+		| "any"
+		| "async"
+		| "isdn"
+		| "l2tp"
+		| "pppoe"
+		| "pptp"
+		| "ovpn"
+		| "sstp";
+	profile?: string; // Default: "default"
+	routes?: string; // Route format
+	remoteIpv6Prefix?: string; // IPv6 prefix
 }
 
 // ============ VPN SPECIFIC TYPES ============
@@ -125,7 +257,8 @@ export interface VPNNetworkConfig {
 	protocol?: "pptp" | "l2tp" | "sstp" | "ovpn" | "ipsec";
 	localAddress?: string;
 	remoteAddress?: string;
-	dnsServers?: string[];
+	dnsServer?: string;
+	winsServer?: string;
 	routes?: Array<{
 		destination: string;
 		gateway?: string;
@@ -134,7 +267,7 @@ export interface VPNNetworkConfig {
 }
 
 export interface VPNBandwidthConfig extends BaseBandwidthConfig {
-	// VPN specific bandwidth configs
+	rateLimit?: string;
 }
 
 export interface VPNTimeoutConfig extends BaseTimeoutConfig {
@@ -145,6 +278,8 @@ export interface VPNTimeoutConfig extends BaseTimeoutConfig {
 export interface VPNLimitsConfig extends BaseLimitsConfig {
 	maxConnections?: number;
 	simultaneousConnections?: number;
+	useCompression?: "yes" | "no" | "default";
+	useEncryption?: "yes" | "no" | "default" | "require";
 }
 
 export interface VPNSecurityConfig {
@@ -153,15 +288,24 @@ export interface VPNSecurityConfig {
 	certificate?: string;
 	caCertificate?: string;
 	requireClientCert?: boolean;
+	incomingFilter?: string;
+	outgoingFilter?: string;
 }
 
 export interface VPNAdvancedConfig {
-	mppe?: boolean;
-	mppeRequired?: boolean;
-	allowFastPath?: boolean;
-	useIpsec?: boolean;
-	ipsecSecret?: string;
-	defaultRoute?: boolean;
+	service?:
+		| "any"
+		| "async"
+		| "isdn"
+		| "l2tp"
+		| "pppoe"
+		| "pptp"
+		| "ovpn"
+		| "sstp";
+	onlyOne?: "yes" | "no" | "default";
+	useIpv6?: "yes" | "no" | "default" | "require";
+	useMpls?: "yes" | "no" | "default" | "require";
+	useVjCompression?: "yes" | "no" | "default";
 }
 
 // ============ BANDWIDTH PROFILE SPECIFIC TYPES ============
@@ -240,7 +384,7 @@ export interface VoucherStatistics {
 	usedCount?: number;
 	usedBytesIn?: number;
 	usedBytesOut?: number;
-	lastUsed?: string; // ISO date
+	lastUsed?: string | undefined; // ISO date
 	firstUsed?: string; // ISO date
 	remainingTime?: number; // seconds
 	remainingData?: number; // bytes
@@ -250,11 +394,12 @@ export interface VoucherGenerationConfig {
 	length?: number; // code length
 	prefix?: string;
 	suffix?: string;
-	charset?: "alphanumeric" | "numeric" | "alphabetic" | "custom";
+	characters?: string;
 	customCharset?: string;
 	quantity?: number;
-	avoidSimilar?: boolean; // avoid 0, O, 1, l, etc.
-	format?: string; // pattern like "XXX-XXX-XXX"
+	passwordMode: "same_as_username" | "random" | "custom";
+	generationMode: "random" | "sequential";
+	count: number;
 }
 
 // ============ UNION TYPES FOR DIFFERENT SESSION TYPES ============
@@ -309,12 +454,16 @@ export type SessionType =
 // ============ TYPE-SAFE SESSION PROFILE TYPES ============
 
 export interface TypedSessionProfile<T extends SessionType = SessionType> {
-	id: number;
+	id?: number;
 	router_id: number;
 	name: string;
 	type: T;
-	price: string;
-	sell_price: string;
+	price: string; // Custom field - keep as string for decimal precision
+	sell_price: string; // Custom field - keep as string for decimal precision
+	mikrotik_profile_id?: string;
+	validity: string;
+	cron_enabled?: boolean;
+
 	network_config: T extends "pppoe"
 		? PPPoENetworkConfig
 		: T extends "hotspot"
@@ -369,13 +518,12 @@ export interface TypedSessionProfile<T extends SessionType = SessionType> {
 		: T extends "vpn"
 		? VPNAdvancedConfig
 		: AdvancedConfig;
-	comment?: string;
-	mikrotik_id?: string;
-	synced_to_mikrotik: boolean;
-	status: "active" | "inactive" | "suspended";
-	is_active: boolean;
-	created_at: Date;
-	updated_at: Date;
+	comment?: string; // Custom field
+	synced_to_mikrotik?: boolean; // Custom field
+	status?: "active" | "inactive" | "suspended"; // Custom field
+	is_active?: boolean; // Custom field
+	created_at?: Date; // Custom field
+	updated_at?: Date; // Custom field
 }
 
 // ============ SPECIFIC PROFILE TYPES ============
@@ -385,6 +533,16 @@ export type HotspotProfile = TypedSessionProfile<"hotspot">;
 export type VPNProfile = TypedSessionProfile<"vpn">;
 export type BandwidthProfile = TypedSessionProfile<"bandwidth">;
 export type StaticIPProfile = TypedSessionProfile<"static_ip">;
+
+// ============ USER CONFIGURATION TYPES ============
+
+export interface HotspotUserProfile extends HotspotUserConfig {
+	profileName: string; // References the profile name
+}
+
+export interface PPPSecretUserProfile extends PPPSecretUserConfig {
+	profileName: string; // References the profile name
+}
 
 // ============ HELPER TYPES FOR FORM VALIDATION ============
 
@@ -426,14 +584,24 @@ export const BaseLimitsConfigSchema = z.object({
 	validity: z.number().positive().optional(),
 });
 
-// PPPoE schemas
+// PPPoE schemas - Updated to match Mikrotik specifications
 export const PPPoENetworkConfigSchema = z.object({
-	bridgeLearning: z.boolean().optional(),
-	useIpv6: z.boolean().optional(),
-	useMpls: z.boolean().optional(),
-	changeTcpMss: z.boolean().optional(),
-	useUpnp: z.boolean().optional(),
-	addressList: z.array(z.string()).optional(),
+	bridge: z.string().optional(),
+	bridgeHorizon: z.number().min(0).max(429496729).optional(),
+	bridgeLearning: z.enum(["default", "no", "yes"]).optional(),
+	bridgePathCost: z.number().min(0).max(429496729).optional(),
+	bridgePortPriority: z.number().min(0).max(240).optional(),
+	addressList: z.string().optional(),
+	changeTcpMss: z.enum(["yes", "no", "default"]).optional(),
+	dnsServer: z.string().ip().optional(),
+	winsServer: z.string().ip().optional(),
+	localAddress: z.string().optional(),
+	remoteAddress: z.string().optional(),
+	remoteIpv6PrefixPool: z.string().optional(),
+	dhcpv6PdPool: z.string().optional(),
+	useIpv6: z.enum(["yes", "no", "default", "require"]).optional(),
+	useMpls: z.enum(["yes", "no", "default", "require"]).optional(),
+	useVjCompression: z.enum(["yes", "no", "default"]).optional(),
 	onUp: z.string().optional(),
 	onDown: z.string().optional(),
 });
@@ -443,35 +611,28 @@ export const PPPoEBandwidthConfigSchema = BaseBandwidthConfigSchema.extend({
 });
 
 export const PPPoELimitsConfigSchema = BaseLimitsConfigSchema.extend({
-	useCompression: z.boolean().optional(),
-	useEncryption: z.boolean().optional(),
-	onlyOne: z.boolean().optional(),
+	useCompression: z.enum(["yes", "no", "default"]).optional(),
+	useEncryption: z.enum(["yes", "no", "default", "require"]).optional(),
+	onlyOne: z.enum(["yes", "no", "default"]).optional(),
 });
 
 export const PPPoESecurityConfigSchema = z.object({
-	useCompression: z.boolean().optional(),
-	useEncryption: z.boolean().optional(),
-	allowedAddress: z.array(z.string()).optional(),
-	callerIdFilter: z.array(z.string()).optional(),
+	useCompression: z.enum(["yes", "no", "default"]).optional(),
+	useEncryption: z.enum(["yes", "no", "default", "require"]).optional(),
+	incomingFilter: z.string().optional(),
+	outgoingFilter: z.string().optional(),
+	callerId: z.string().optional(),
 });
 
-export const PPPoEAdvancedConfigSchema = z.object({
-	serviceName: z.string().optional(),
-	acName: z.string().optional(),
-	interfaceList: z.string().optional(),
-	maxMru: z.number().positive().optional(),
-	maxMtu: z.number().positive().optional(),
-	mrru: z.number().positive().optional(),
-});
-
-// Hotspot schemas
+// Hotspot schemas - Updated to match Mikrotik specifications
 export const HotspotNetworkConfigSchema = z.object({
-	addressList: z.array(z.string()).optional(),
+	addressList: z.string().optional(),
+	addressPool: z.string().optional(),
 	transparentProxy: z.boolean().optional(),
-	httpProxy: z.string().optional(),
-	httpsProxy: z.string().optional(),
-	ftp: z.boolean().optional(),
-	bypass: z.boolean().optional(),
+	advertise: z.boolean().optional(),
+	advertiseInterval: z.string().optional(),
+	advertiseTimeout: z.string().optional(),
+	advertiseUrl: z.string().optional(),
 });
 
 export const HotspotBandwidthConfigSchema = BaseBandwidthConfigSchema.extend({
@@ -480,53 +641,55 @@ export const HotspotBandwidthConfigSchema = BaseBandwidthConfigSchema.extend({
 });
 
 export const HotspotTimeoutConfigSchema = BaseTimeoutConfigSchema.extend({
-	keepaliveTimeout: z.number().positive().optional(),
-	statusAutorefresh: z.number().positive().optional(),
-	macCookieTimeout: z.number().positive().optional(),
-});
-
-export const HotspotLimitsConfigSchema = BaseLimitsConfigSchema.extend({
-	macCookieTimeout: z.number().positive().optional(),
-	sharedUsers: z.number().positive().optional(),
+	keepaliveTimeout: z.string().optional(),
+	idleTimeout: z.string().optional(),
+	macCookieTimeout: z.string().optional(),
+	statusAutorefresh: z.string().optional(),
 });
 
 export const HotspotSecurityConfigSchema = z.object({
-	addressList: z.array(z.string()).optional(),
-	transparentProxy: z.boolean().optional(),
-	bypassProxy: z.boolean().optional(),
-	advertise: z.boolean().optional(),
-	advertiseUrl: z.string().url().optional(),
-	advertiseInterval: z.number().positive().optional(),
-});
-
-export const HotspotAdvancedConfigSchema = z.object({
-	sharedUsers: z.number().positive().optional(),
 	addMacCookie: z.boolean().optional(),
-	macCookieTimeout: z.number().positive().optional(),
-	keepaliveTimeout: z.number().positive().optional(),
-	statusAutorefresh: z.number().positive().optional(),
-	openStatusPage: z.string().optional(),
-	httpPap: z.boolean().optional(),
-	httpChap: z.boolean().optional(),
-	httpsRedirect: z.boolean().optional(),
-	split: z.boolean().optional(),
+	macCookieTimeout: z.string().optional(),
+	incomingFilter: z.string().optional(),
+	outgoingFilter: z.string().optional(),
+	incomingPacketMark: z.string().optional(),
+	outgoingPacketMark: z.string().optional(),
 });
 
-// VPN schemas
-export const VPNNetworkConfigSchema = z.object({
-	protocol: z.enum(["pptp", "l2tp", "sstp", "ovpn", "ipsec"]).optional(),
-	localAddress: z.string().ip().optional(),
-	remoteAddress: z.string().ip().optional(),
-	dnsServers: z.array(z.string().ip()).optional(),
-	routes: z
-		.array(
-			z.object({
-				destination: z.string(),
-				gateway: z.string().ip().optional(),
-				distance: z.number().positive().optional(),
-			})
-		)
+// Hotspot User Config Schema
+export const HotspotUserConfigSchema = z.object({
+	name: z.string().min(1),
+	password: z.string().optional(),
+	email: z.string().email().optional(),
+	comment: z.string().optional(),
+	address: z.string().ip().optional(),
+	macAddress: z.string().optional(),
+	limitBytesIn: z.number().nonnegative().optional(),
+	limitBytesOut: z.number().nonnegative().optional(),
+	limitBytesTotal: z.number().nonnegative().optional(),
+	limitUptime: z.string().optional(),
+	server: z.string().optional(),
+	profile: z.string().optional(),
+	routes: z.string().optional(),
+});
+
+// PPP Secret User Config Schema
+export const PPPSecretUserConfigSchema = z.object({
+	name: z.string().min(1),
+	password: z.string().optional(),
+	comment: z.string().optional(),
+	disabled: z.boolean().optional(),
+	localAddress: z.string().optional(),
+	remoteAddress: z.string().optional(),
+	callerId: z.string().optional(),
+	limitBytesIn: z.number().nonnegative().optional(),
+	limitBytesOut: z.number().nonnegative().optional(),
+	service: z
+		.enum(["any", "async", "isdn", "l2tp", "pppoe", "pptp", "ovpn", "sstp"])
 		.optional(),
+	profile: z.string().optional(),
+	routes: z.string().optional(),
+	remoteIpv6Prefix: z.string().optional(),
 });
 
 // ============ TYPE GUARDS ============
@@ -572,6 +735,8 @@ export function createPPPoEProfile(
 		type: "pppoe",
 		price: data.price || "0",
 		sell_price: data.sell_price || "0",
+		validity: data.validity || "",
+		cron_enabled: data.cron_enabled || true,
 		network_config: data.network_config || {},
 		bandwidth_config: data.bandwidth_config || {},
 		timeout_config: data.timeout_config || {},
@@ -579,7 +744,6 @@ export function createPPPoEProfile(
 		security_config: data.security_config,
 		advanced_config: data.advanced_config,
 		comment: data.comment,
-		mikrotik_id: data.mikrotik_id,
 		synced_to_mikrotik: data.synced_to_mikrotik || false,
 		status: data.status || "active",
 		is_active: data.is_active ?? true,
@@ -595,6 +759,7 @@ export function createHotspotProfile(
 		type: "hotspot",
 		price: data.price || "0",
 		sell_price: data.sell_price || "0",
+		validity: data.validity || "",
 		network_config: data.network_config || {},
 		bandwidth_config: data.bandwidth_config || {},
 		timeout_config: data.timeout_config || {},
@@ -602,7 +767,6 @@ export function createHotspotProfile(
 		security_config: data.security_config,
 		advanced_config: data.advanced_config,
 		comment: data.comment,
-		mikrotik_id: data.mikrotik_id,
 		synced_to_mikrotik: data.synced_to_mikrotik || false,
 		status: data.status || "active",
 		is_active: data.is_active ?? true,
@@ -629,7 +793,7 @@ export function validateSessionProfile<T extends SessionType>(
 		errors.push("Sell price must be a positive number");
 	}
 
-	// Type-specific validations
+	// Type-specific validations based on Mikrotik specs
 	switch (type) {
 		case "pppoe":
 			if (
@@ -645,11 +809,11 @@ export function validateSessionProfile<T extends SessionType>(
 			break;
 		case "hotspot":
 			if (
-				profile.advanced_config &&
-				typeof profile.advanced_config === "object" &&
-				"sharedUsers" in profile.advanced_config &&
-				profile.advanced_config.sharedUsers &&
-				profile.advanced_config.sharedUsers < 1
+				profile.bandwidth_config &&
+				typeof profile.bandwidth_config === "object" &&
+				"sharedUsers" in profile.bandwidth_config &&
+				profile.bandwidth_config.sharedUsers &&
+				profile.bandwidth_config.sharedUsers < 1
 			) {
 				errors.push("Shared users must be at least 1");
 			}
@@ -698,19 +862,18 @@ export function parseBandwidthValue(value: string): number {
 // ============ DEFAULT CONFIGURATIONS ============
 
 export const defaultPPPoEConfig: PPPoEProfile["network_config"] = {
-	bridgeLearning: true,
-	useIpv6: false,
-	useMpls: false,
-	changeTcpMss: false,
-	useUpnp: false,
-	addressList: [],
+	bridgeLearning: "default",
+	useIpv6: "default",
+	useMpls: "default",
+	changeTcpMss: "default",
+	addressList: undefined,
 };
 
 export const defaultHotspotConfig: HotspotProfile["network_config"] = {
 	transparentProxy: true,
-	ftp: false,
-	bypass: false,
-	addressList: [],
+	advertise: false,
+	addressList: undefined,
+	addressPool: "none",
 };
 
 export const defaultBandwidthConfig: BaseBandwidthConfig = {
@@ -722,3 +885,123 @@ export const defaultTimeoutConfig: BaseTimeoutConfig = {
 	sessionTimeout: 0, // unlimited
 	idleTimeout: 0, // unlimited
 };
+
+export const defaultHotspotUserConfig: HotspotUserConfig = {
+	name: "",
+	address: "0.0.0.0",
+	macAddress: "00:00:00:00:00:00",
+	limitBytesIn: 0,
+	limitBytesOut: 0,
+	limitBytesTotal: 0,
+	limitUptime: "0",
+	server: "all",
+	profile: "default",
+};
+
+export const defaultPPPSecretUserConfig: PPPSecretUserConfig = {
+	name: "",
+	disabled: false,
+	limitBytesIn: 0,
+	limitBytesOut: 0,
+	service: "any",
+	profile: "default",
+};
+
+// ============ MIKROTIK FIELD MAPPING ============
+
+// Maps our custom fields to Mikrotik RouterOS fields
+export const MIKROTIK_FIELD_MAPPING = {
+	// PPP Profile mappings
+	PPP_PROFILE: {
+		"address-list": "addressList",
+		bridge: "bridge",
+		"bridge-horizon": "bridgeHorizon",
+		"bridge-learning": "bridgeLearning",
+		"bridge-path-cost": "bridgePathCost",
+		"bridge-port-priority": "bridgePortPriority",
+		"change-tcp-mss": "changeTcpMss",
+		comment: "comment",
+		"dhcpv6-pd-pool": "dhcpv6PdPool",
+		"dns-server": "dnsServer",
+		"idle-timeout": "idleTimeout",
+		"incoming-filter": "incomingFilter",
+		"local-address": "localAddress",
+		name: "name",
+		"only-one": "onlyOne",
+		"outgoing-filter": "outgoingFilter",
+		"rate-limit": "rateLimit",
+		"remote-address": "remoteAddress",
+		"remote-ipv6-prefix-pool": "remoteIpv6PrefixPool",
+		"session-timeout": "sessionTimeout",
+		"use-compression": "useCompression",
+		"use-encryption": "useEncryption",
+		"use-ipv6": "useIpv6",
+		"use-mpls": "useMpls",
+		"use-vj-compression": "useVjCompression",
+		"on-up": "onUp",
+		"on-down": "onDown",
+		"wins-server": "winsServer",
+	},
+
+	// PPP Secret mappings
+	PPP_SECRET: {
+		"caller-id": "callerId",
+		comment: "comment",
+		disabled: "disabled",
+		"limit-bytes-in": "limitBytesIn",
+		"limit-bytes-out": "limitBytesOut",
+		"local-address": "localAddress",
+		name: "name",
+		password: "password",
+		profile: "profile",
+		"remote-address": "remoteAddress",
+		"remote-ipv6-prefix": "remoteIpv6Prefix",
+		routes: "routes",
+		service: "service",
+	},
+
+	// Hotspot User Profile mappings
+	HOTSPOT_USER_PROFILE: {
+		"add-mac-cookie": "addMacCookie",
+		"address-list": "addressList",
+		"address-pool": "addressPool",
+		advertise: "advertise",
+		"advertise-interval": "advertiseInterval",
+		"advertise-timeout": "advertiseTimeout",
+		"advertise-url": "advertiseUrl",
+		"idle-timeout": "idleTimeout",
+		"incoming-filter": "incomingFilter",
+		"incoming-packet-mark": "incomingPacketMark",
+		"keepalive-timeout": "keepaliveTimeout",
+		"mac-cookie-timeout": "macCookieTimeout",
+		name: "name",
+		"on-login": "onLogin",
+		"on-logout": "onLogout",
+		"open-status-page": "openStatusPage",
+		"outgoing-filter": "outgoingFilter",
+		"outgoing-packet-mark": "outgoingPacketMark",
+		"rate-limit": "rateLimit",
+		"session-timeout": "sessionTimeout",
+		"shared-users": "sharedUsers",
+		"status-autorefresh": "statusAutorefresh",
+		"transparent-proxy": "transparentProxy",
+	},
+
+	// Hotspot User mappings
+	HOTSPOT_USER: {
+		address: "address",
+		comment: "comment",
+		email: "email",
+		"limit-bytes-in": "limitBytesIn",
+		"limit-bytes-out": "limitBytesOut",
+		"limit-bytes-total": "limitBytesTotal",
+		"limit-uptime": "limitUptime",
+		"mac-address": "macAddress",
+		name: "name",
+		password: "password",
+		profile: "profile",
+		routes: "routes",
+		server: "server",
+	},
+} as const;
+
